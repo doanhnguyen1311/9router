@@ -12,6 +12,7 @@ const EMPTY_QUOTA = {
   resetInterval: null,
   resetIntervalValue: null,
   resetIntervalUnit: null,
+  expiresAt: null,
 };
 const EMPTY_USAGE = { cost: 0, inputTokens: 0, requests: 0, resetAt: null, nextResetAt: null };
 
@@ -46,7 +47,17 @@ function initialForm(quota) {
     resetInterval: quota.resetMode === "scheduled" ? (quota.resetInterval || "monthly") : "monthly",
     resetIntervalValue: quota.resetIntervalValue ?? 30,
     resetIntervalUnit: quota.resetIntervalUnit || "minutes",
+    expiryMode: quota.expiresAt ? "scheduled" : "never",
+    expiresAt: toDateTimeLocal(quota.expiresAt),
   };
+}
+
+function toDateTimeLocal(value) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 function formatResetDate(value) {
@@ -124,15 +135,28 @@ export default function KeyQuotaControls({ apiKey, onSave, onRequestReset }) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!usage.nextResetAt) return undefined;
+    if (!usage.nextResetAt && !quota.expiresAt) return undefined;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [usage.nextResetAt]);
+  }, [usage.nextResetAt, quota.expiresAt]);
 
   const save = async () => {
     const customIntervalValue = form.resetMode === "scheduled" && form.resetInterval === "custom"
       ? quotaValue(form.resetIntervalValue, true)
       : null;
+    let expiresAt = null;
+    if (form.expiryMode === "scheduled") {
+      const expiry = new Date(form.expiresAt);
+      if (!form.expiresAt || !Number.isFinite(expiry.getTime())) {
+        setError("Choose a valid expiration date and time.");
+        return;
+      }
+      if (expiry.getTime() <= Date.now()) {
+        setError("Expiration must be in the future.");
+        return;
+      }
+      expiresAt = expiry.toISOString();
+    }
     const next = {
       maxCost: quotaValue(form.maxCost),
       maxInputTokens: quotaValue(form.maxInputTokens, true),
@@ -145,6 +169,7 @@ export default function KeyQuotaControls({ apiKey, onSave, onRequestReset }) {
       resetIntervalUnit: form.resetMode === "scheduled" && form.resetInterval === "custom"
         ? form.resetIntervalUnit
         : null,
+      expiresAt,
     };
     if ([next.maxCost, next.maxInputTokens, next.maxRequests].some((value) => value === undefined)) {
       setError("Limits must be positive numbers. Tokens and requests must be whole numbers.");
@@ -170,6 +195,7 @@ export default function KeyQuotaControls({ apiKey, onSave, onRequestReset }) {
   };
 
   const hasUsage = usage.requests > 0 || usage.inputTokens > 0 || usage.cost > 0;
+  const isExpired = quota.expiresAt && new Date(quota.expiresAt).getTime() <= now;
 
   return (
     <div className="mt-3" data-testid="key-quota">
@@ -206,6 +232,11 @@ export default function KeyQuotaControls({ apiKey, onSave, onRequestReset }) {
           </span>
         )}
         {usage.resetAt && <span>Last reset {formatResetDate(usage.resetAt)}</span>}
+        <span className={isExpired ? "font-semibold text-red-500" : ""}>
+          {quota.expiresAt
+            ? `${isExpired ? "Expired" : "Expires"} ${formatResetDate(quota.expiresAt)}${isExpired ? "" : ` (${formatTimeLeft(quota.expiresAt, now)})`}`
+            : "Never expires"}
+        </span>
       </div>
 
       {editing && (
@@ -309,6 +340,55 @@ export default function KeyQuotaControls({ apiKey, onSave, onRequestReset }) {
               </p>
             </div>
           )}
+          <fieldset className="mt-3">
+            <legend className="text-xs font-medium text-text-main">Key expiration</legend>
+            <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+              {[
+                {
+                  value: "never",
+                  title: "Never expires",
+                  description: "Keep this API key valid until an admin pauses or deletes it.",
+                },
+                {
+                  value: "scheduled",
+                  title: "Expire at a date",
+                  description: "Reject every request made with this key after the selected time.",
+                },
+              ].map((option) => (
+                <label
+                  key={option.value}
+                  className={`cursor-pointer rounded-lg border p-2.5 transition-colors ${form.expiryMode === option.value ? "border-primary bg-primary/5" : "border-border bg-surface"}`}
+                >
+                  <span className="flex items-center gap-2 text-xs font-medium text-text-main">
+                    <input
+                      type="radio"
+                      name={`quota-expiry-${apiKey.id}`}
+                      value={option.value}
+                      checked={form.expiryMode === option.value}
+                      onChange={() => setForm((current) => ({ ...current, expiryMode: option.value }))}
+                    />
+                    {option.title}
+                  </span>
+                  <span className="mt-1 block pl-5 text-[11px] leading-relaxed text-text-muted">{option.description}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          {form.expiryMode === "scheduled" && (
+            <div className="mt-3 max-w-xs">
+              <Input
+                label="Expires at"
+                type="datetime-local"
+                min={toDateTimeLocal(new Date(now + 60000))}
+                step="60"
+                value={form.expiresAt}
+                onChange={(event) => setForm((current) => ({ ...current, expiresAt: event.target.value }))}
+              />
+              <p className="mt-1.5 text-xs text-text-muted">
+                The selected time uses your browser&apos;s local timezone.
+              </p>
+            </div>
+          )}
           {error && <p className="mt-2 text-xs text-red-500">{error}</p>}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button size="sm" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save limits"}</Button>
@@ -332,6 +412,7 @@ KeyQuotaControls.propTypes = {
       resetInterval: PropTypes.oneOf(["daily", "weekly", "monthly", "custom"]),
       resetIntervalValue: PropTypes.number,
       resetIntervalUnit: PropTypes.oneOf(["minutes", "hours", "days"]),
+      expiresAt: PropTypes.string,
     }),
     usage: PropTypes.shape({
       cost: PropTypes.number,

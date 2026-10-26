@@ -52,7 +52,11 @@ export async function getPricingForModel(provider, model) {
   if (!model) return null;
   const userPricing = await getUserPricing();
   if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
-  const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
+  const { getPricingForModel: resolveConst, normalizePricingModelId } = await import("open-sse/providers/pricing.js");
+  const pricingModel = normalizePricingModelId(model);
+  if (provider && pricingModel !== model && userPricing[provider]?.[pricingModel]) {
+    return userPricing[provider][pricingModel];
+  }
   return resolveConst(provider, model);
 }
 

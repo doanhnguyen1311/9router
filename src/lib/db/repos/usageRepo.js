@@ -345,6 +345,130 @@ export async function getUsageHistory(filter = {}) {
   }));
 }
 
+/**
+ * Return the current quota-window usage visible to the owner of one API key.
+ * The full key is used only as a parameterized lookup and is never echoed.
+ */
+export async function getApiKeyUsageSummary(apiKey) {
+  if (!apiKey || typeof apiKey !== "string") return null;
+
+  const { getApiKeyByKey } = await import("./apiKeysRepo.js");
+  const keyRecord = await getApiKeyByKey(apiKey);
+  if (!keyRecord?.isActive || keyRecord.isExpired) return null;
+
+  const db = await getAdapter();
+  const createdAt = new Date(keyRecord.createdAt);
+  const resetAt = keyRecord.usage.resetAt ? new Date(keyRecord.usage.resetAt) : null;
+  const createdAtMs = Number.isFinite(createdAt.getTime()) ? createdAt.getTime() : 0;
+  const resetAtMs = resetAt && Number.isFinite(resetAt.getTime()) ? resetAt.getTime() : 0;
+  const windowStartedAt = new Date(Math.max(createdAtMs, resetAtMs)).toISOString();
+
+  const rows = db.all(
+    `SELECT
+        provider,
+        model,
+        COUNT(*) AS requests,
+        COALESCE(SUM(promptTokens), 0) AS inputTokens,
+        COALESCE(SUM(completionTokens), 0) AS outputTokens,
+        COALESCE(SUM(promptTokens), 0) + COALESCE(SUM(completionTokens), 0) AS totalTokens,
+        COALESCE(SUM(cost), 0) AS cost,
+        MAX(timestamp) AS lastUsedAt
+       FROM usageHistory
+      WHERE apiKey = ? AND timestamp >= ?
+      GROUP BY provider, model
+      ORDER BY cost DESC, totalTokens DESC, lastUsedAt DESC`,
+    [apiKey, windowStartedAt],
+  );
+
+  const modelKey = (provider, model) => `${provider || "unknown"}\u0000${model || "Unknown model"}`;
+  const modelMap = new Map();
+  const models = rows.map((row) => {
+    const aggregate = {
+      model: row.model || "Unknown model",
+      provider: row.provider || "unknown",
+      requests: Math.max(0, Number(row.requests) || 0),
+      inputTokens: Math.max(0, Number(row.inputTokens) || 0),
+      outputTokens: Math.max(0, Number(row.outputTokens) || 0),
+      totalTokens: Math.max(0, Number(row.totalTokens) || 0),
+      cost: Math.max(0, Number(row.cost) || 0),
+      lastUsedAt: row.lastUsedAt,
+    };
+    modelMap.set(modelKey(row.provider, row.model), aggregate);
+    return aggregate;
+  });
+
+  // Versions before the pricing suffix fix stored $0 for virtual thinking ids
+  // such as `gpt-6.1-sol(xhigh)`. Re-price only those legacy zero-cost rows at
+  // read time so existing usage becomes visible without mutating history or
+  // double-charging rows that already have a recorded cost.
+  const legacyZeroCostRows = db.all(
+    `SELECT provider, model, promptTokens, completionTokens, tokens
+       FROM usageHistory
+      WHERE apiKey = ? AND timestamp >= ? AND cost = 0 AND model LIKE '%(%)'`,
+    [apiKey, windowStartedAt],
+  );
+  if (legacyZeroCostRows.length > 0) {
+    const [{ getPricingForModel }, { calculateCostFromTokens }] = await Promise.all([
+      import("./pricingRepo.js"),
+      import("open-sse/providers/pricing.js"),
+    ]);
+    const pricingCache = new Map();
+    for (const row of legacyZeroCostRows) {
+      const key = modelKey(row.provider, row.model);
+      const aggregate = modelMap.get(key);
+      if (!aggregate) continue;
+      if (!pricingCache.has(key)) {
+        pricingCache.set(key, await getPricingForModel(row.provider, row.model));
+      }
+      const pricing = pricingCache.get(key);
+      if (!pricing) continue;
+      const storedTokens = parseJson(row.tokens, {}) || {};
+      aggregate.cost += calculateCostFromTokens({
+        ...storedTokens,
+        prompt_tokens: storedTokens.prompt_tokens ?? storedTokens.input_tokens ?? row.promptTokens ?? 0,
+        completion_tokens: storedTokens.completion_tokens ?? storedTokens.output_tokens ?? row.completionTokens ?? 0,
+      }, pricing);
+    }
+    models.sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens || new Date(b.lastUsedAt) - new Date(a.lastUsedAt));
+  }
+  const recordedRequests = models.reduce((sum, model) => sum + model.requests, 0);
+  const outputTokens = models.reduce((sum, model) => sum + model.outputTokens, 0);
+  const cost = models.reduce((sum, model) => sum + model.cost, 0);
+
+  return {
+    key: {
+      name: keyRecord.name || "API key",
+      masked: maskApiKey(apiKey),
+      createdAt: keyRecord.createdAt,
+      isActive: true,
+    },
+    window: {
+      startedAt: windowStartedAt,
+      resetsAt: keyRecord.usage.nextResetAt,
+      resetMode: keyRecord.quota.resetMode,
+      resetInterval: keyRecord.quota.resetInterval,
+      resetIntervalValue: keyRecord.quota.resetIntervalValue,
+      resetIntervalUnit: keyRecord.quota.resetIntervalUnit,
+    },
+    quota: {
+      maxCost: keyRecord.quota.maxCost,
+      maxInputTokens: keyRecord.quota.maxInputTokens,
+      maxRequests: keyRecord.quota.maxRequests,
+      expiresAt: keyRecord.quota.expiresAt,
+    },
+    usage: {
+      requests: keyRecord.usage.requests,
+      recordedRequests,
+      inputTokens: keyRecord.usage.inputTokens,
+      outputTokens,
+      totalTokens: keyRecord.usage.inputTokens + outputTokens,
+      cost,
+      modelCount: models.length,
+    },
+    models,
+  };
+}
+
 function loadDaysInRange(adapter, maxDays) {
   if (maxDays == null) {
     return adapter.all(`SELECT dateKey, data FROM usageDaily ORDER BY dateKey ASC`);

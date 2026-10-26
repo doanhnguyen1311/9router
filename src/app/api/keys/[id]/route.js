@@ -51,6 +51,11 @@ export async function PUT(request, { params }) {
         quotaInput.resetIntervalValue = null;
         quotaInput.resetIntervalUnit = null;
       }
+      // Older clients do not know about key expiration. Updating numeric
+      // limits must not silently turn an expiring key into a permanent one.
+      if (quotaInput.expiresAt === undefined) {
+        quotaInput.expiresAt = existing.quota.expiresAt ?? null;
+      }
       const checked = validateKeyQuotaInput(quotaInput);
       if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
       updateData.quota = checked.value;

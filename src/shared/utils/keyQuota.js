@@ -6,6 +6,7 @@ const QUOTA_FIELDS = new Set([
   "resetInterval",
   "resetIntervalValue",
   "resetIntervalUnit",
+  "expiresAt",
 ]);
 
 export const KEY_QUOTA_RESET_MODES = Object.freeze(["manual", "scheduled"]);
@@ -20,6 +21,7 @@ export const KEY_QUOTA_UNLIMITED = Object.freeze({
   resetInterval: null,
   resetIntervalValue: null,
   resetIntervalUnit: null,
+  expiresAt: null,
 });
 
 export const KEY_QUOTA_USAGE_EMPTY = Object.freeze({
@@ -36,6 +38,13 @@ function nullablePositiveNumber(value, { integer = false } = {}) {
   if (integer && (!Number.isSafeInteger(value) || value < 1)) return undefined;
   if (!integer && value <= 0) return undefined;
   return value;
+}
+
+function nullableIsoDate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") return undefined;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
 }
 
 export function validateKeyQuotaInput(input) {
@@ -56,6 +65,11 @@ export function validateKeyQuotaInput(input) {
   const maxRequests = nullablePositiveNumber(input.maxRequests, { integer: true });
   if (maxRequests === undefined) {
     return { ok: false, error: "quota.maxRequests must be a positive safe integer, 0, or null" };
+  }
+
+  const expiresAt = nullableIsoDate(input.expiresAt);
+  if (expiresAt === undefined) {
+    return { ok: false, error: "quota.expiresAt must be a valid date-time string or null" };
   }
 
   const resetMode = input.resetMode === undefined ? "manual" : input.resetMode;
@@ -98,6 +112,7 @@ export function validateKeyQuotaInput(input) {
       resetInterval: resetMode === "scheduled" ? resetInterval : null,
       resetIntervalValue,
       resetIntervalUnit,
+      expiresAt,
     },
   };
 }
@@ -117,6 +132,7 @@ export function keyQuotaFromColumns(
   resetIntervalCol,
   resetIntervalValueCol,
   resetIntervalUnitCol,
+  expiresAtCol,
 ) {
   const resetMode = resetModeCol === "scheduled" ? "scheduled" : "manual";
   const resetInterval = KEY_QUOTA_RESET_INTERVALS.includes(resetIntervalCol) ? resetIntervalCol : null;
@@ -137,6 +153,7 @@ export function keyQuotaFromColumns(
     resetInterval: validSchedule ? resetInterval : null,
     resetIntervalValue: validCustom ? resetIntervalValue : null,
     resetIntervalUnit: validCustom ? resetIntervalUnitCol : null,
+    expiresAt: nullableIsoDate(expiresAtCol) ?? null,
   };
 }
 
@@ -152,7 +169,16 @@ export function keyQuotaToColumns(quota) {
     quotaResetInterval: value.resetInterval,
     quotaResetIntervalValue: value.resetIntervalValue,
     quotaResetIntervalUnit: value.resetIntervalUnit,
+    quotaExpiresAt: value.expiresAt,
   };
+}
+
+export function isKeyQuotaExpired(quota, now = new Date()) {
+  const expiresAt = nullableIsoDate(quota?.expiresAt);
+  if (!expiresAt) return false;
+  const nowDate = now instanceof Date ? now : new Date(now);
+  if (!Number.isFinite(nowDate.getTime())) return false;
+  return new Date(expiresAt).getTime() <= nowDate.getTime();
 }
 
 export function keyQuotaUsageFromColumns(cost, inputTokens, requests, resetAt, nextResetAt) {

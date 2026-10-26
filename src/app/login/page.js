@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { Card, Button, Input } from "@/shared/components";
 
 export default function LoginPage() {
@@ -265,6 +266,12 @@ export default function LoginPage() {
           </div>
           )}
         </Card>
+        <p className="mt-5 text-center text-xs text-text-muted">
+          Have an API key?{" "}
+          <Link href="/key-usage" className="font-semibold text-primary hover:underline">
+            View your usage
+          </Link>
+        </p>
       </div>
     </div>
   );

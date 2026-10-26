@@ -1,6 +1,8 @@
 # v0.5.111 (2026-10-26)
 
 ## Features
+- **API Keys**: let admins set a key expiration date from Usage limits or keep the key valid forever, with enforcement across authentication and request admission
+- **API Keys**: add an auto-refreshing public `/key-usage` self-service page where active key holders can securely view current-window requests, input/output tokens, cost, quota progress, and per-model activity without dashboard access
 - **Ollama**: add `ollama-local` TTS provider serving the Phonon family (15 tags, 38 preset voices), normalizing the requested format to wav/pcm, falling back to an installed tag and the `default` voice, and wrapping raw PCM in a WAV header so the dashboard can preview it
 - **Ollama**: add `ollama-local` embedding adapter for `/v1/embeddings`, normalizing a saved host that carries a `/v1` or `/v1/embeddings` suffix and sending a bearer token only when an API key is configured; catalog the 14 embedding model families with their dimensions
 - **Providers**: add Runcrate (`rc`) — OpenAI-compatible upstream serving DeepSeek, GLM, Qwen and gpt-oss models, validated through `GET /api/v1/billing/balance` because the public `/v1/models` answers 200 for any key
@@ -8,6 +10,7 @@
 - **OpenCode Go**: add Kimi K3.1 Pro on the chat lane with vision/video input, 1,048,576 context, 131,072 max output and dedicated K3 pricing
 
 ## Fixes
+- **Usage**: price virtual thinking model IDs such as `gpt-6.1-sol(xhigh)` using their base model, and recover their previously recorded zero-cost rows in the API-key self-service view
 - **CLI Tools**: stop the Pi card from resetting every `contextWindow`/`maxTokens` in `~/.pi/agent/models.json` on Apply, add per-model context-window and max-output selectors, and sanitize corrupt cap values instead of writing them back
 - **CLI Tools**: treat `name === id` as unset on Apply so a hand-edited Pi model label is no longer overwritten
 - **OpenCode**: normalize a caller tool that collides with the OpenCode fingerprint in place (keeping the caller's name and adopting the fingerprint schema) instead of aliasing it to `<name>_client` and restoring it on the response (#4971, #5011)

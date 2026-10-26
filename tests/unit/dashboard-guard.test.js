@@ -288,6 +288,15 @@ describe("dashboard guard local-only access", () => {
 });
 
 describe("dashboard guard helpers", () => {
+  it("lets the public key-usage handler perform its own API-key authentication", async () => {
+    const response = await proxy(request("/api/key-usage", {
+      host: "router.example.com",
+    }));
+
+    expect(response).toBe(mocks.nextResponse);
+    expect(mocks.validateApiKey).not.toHaveBeenCalled();
+  });
+
   it("extracts bearer API keys before x-api-key", () => {
     const apiRequest = request("/v1/chat/completions", {
       authorization: "Bearer bearer-key",

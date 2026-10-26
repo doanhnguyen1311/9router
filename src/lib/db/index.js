@@ -70,7 +70,7 @@ export {
 // Usage
 export {
   statsEmitter, trackPendingRequest, getActiveRequests,
-  saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
+  saveRequestUsage, getUsageHistory, getApiKeyUsageSummary, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs,
 } from "./repos/usageRepo.js";
 
@@ -110,6 +110,7 @@ export async function exportDb() {
         r.quotaResetInterval,
         r.quotaResetIntervalValue,
         r.quotaResetIntervalUnit,
+        r.quotaExpiresAt,
       ),
       usage: keyQuotaUsageFromColumns(
         r.quotaUsedCost,
@@ -214,16 +215,17 @@ export async function importDb(payload) {
           id, key, name, machineId, isActive, createdAt,
           accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
-          quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaNextResetAt,
+          quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
           k.createdAt || new Date().toISOString(),
           cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
           quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
           quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
-          quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit, usageNextResetAt,
+          quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
+          quotaCols.quotaExpiresAt, usageNextResetAt,
           usageCost, usageInputTokens, usageRequests, usageResetAt,
         ]
       );

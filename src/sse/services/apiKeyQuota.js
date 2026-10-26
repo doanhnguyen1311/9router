@@ -36,6 +36,18 @@ export async function enforceApiKeyQuota(request) {
   const admission = await admitApiKeyRequest(apiKey);
   if (admission.allowed) return null;
 
+  if (admission.reason === "expired" || admission.reason === "inactive") {
+    const expiredAt = admission.reason === "expired" ? admission.expiresAt : null;
+    log.warn("AUTH", `API key ${admission.reason}`);
+    return errorResponse(
+      HTTP_STATUS.UNAUTHORIZED,
+      expiredAt
+        ? `API key expired at ${expiredAt}. Ask an admin to extend its expiration in Dashboard > Endpoint.`
+        : "API key is inactive.",
+      expiredAt ? { "x-9router-key-expired-at": expiredAt } : {},
+    );
+  }
+
   const exceeded = admission.exceeded;
   log.warn("AUTH", `API key quota exceeded: ${exceeded.kind} ${exceeded.used}/${exceeded.limit}`);
   const resetAt = admission.quota?.resetMode === "scheduled" ? admission.usage?.nextResetAt : null;

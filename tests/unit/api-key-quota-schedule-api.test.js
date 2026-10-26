@@ -20,6 +20,7 @@ const existing = {
     resetInterval: "weekly",
     resetIntervalValue: null,
     resetIntervalUnit: null,
+    expiresAt: "2099-01-01T00:00:00.000Z",
   },
 };
 
@@ -47,6 +48,7 @@ describe("PUT /api/keys/{id} quota schedule", () => {
         resetInterval: "weekly",
         resetIntervalValue: null,
         resetIntervalUnit: null,
+        expiresAt: "2099-01-01T00:00:00.000Z",
       },
     });
   });
@@ -109,6 +111,23 @@ describe("PUT /api/keys/{id} quota schedule", () => {
         resetIntervalValue: 45,
         resetIntervalUnit: "minutes",
       }),
+    });
+  });
+
+  it("accepts an explicit expiration date or never-expiring null", async () => {
+    const expiresAt = "2099-06-01T12:00:00.000Z";
+    const response = await PUT(new Request("http://localhost/api/keys/key-1", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ quota: {
+        ...existing.quota,
+        expiresAt,
+      } }),
+    }), { params: Promise.resolve({ id: "key-1" }) });
+
+    expect(response.status).toBe(200);
+    expect(database.updateApiKey).toHaveBeenCalledWith("key-1", {
+      quota: expect.objectContaining({ expiresAt }),
     });
   });
 });

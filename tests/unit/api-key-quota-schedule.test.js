@@ -45,6 +45,7 @@ describe("API key quota reset contract", () => {
         resetInterval: null,
         resetIntervalValue: null,
         resetIntervalUnit: null,
+        expiresAt: null,
       },
     });
     expect(validateKeyQuotaInput({
@@ -53,6 +54,24 @@ describe("API key quota reset contract", () => {
       maxRequests: 3,
       resetMode: "scheduled",
       resetInterval: "hourly",
+    })).toMatchObject({ ok: false });
+  });
+
+  it("normalizes an optional key expiration and rejects invalid values", () => {
+    expect(validateKeyQuotaInput({
+      maxCost: null,
+      maxInputTokens: null,
+      maxRequests: 3,
+      expiresAt: "2099-01-01T12:00:00+07:00",
+    })).toMatchObject({
+      ok: true,
+      value: { expiresAt: "2099-01-01T05:00:00.000Z" },
+    });
+    expect(validateKeyQuotaInput({
+      maxCost: null,
+      maxInputTokens: null,
+      maxRequests: 3,
+      expiresAt: "not-a-date",
     })).toMatchObject({ ok: false });
   });
 
@@ -149,6 +168,29 @@ describe("API key quota reset contract", () => {
 });
 
 describe("API key quota reset persistence", () => {
+  it("rejects an expired key without consuming another request", async () => {
+    const { database } = await boot();
+    const key = await database.createApiKey("expired", "machine", {
+      maxCost: null,
+      maxInputTokens: null,
+      maxRequests: 10,
+      resetMode: "manual",
+      resetInterval: null,
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+
+    expect(key.isExpired).toBe(true);
+    expect(await database.validateApiKey(key.key)).toBe(false);
+    expect(await database.admitApiKeyRequest(key.key)).toMatchObject({
+      tracked: true,
+      allowed: false,
+      reason: "expired",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+      usage: { requests: 0 },
+    });
+    expect((await database.getApiKeyById(key.id)).usage.requests).toBe(0);
+  });
+
   it("blocks a manual quota until admin reset", async () => {
     const { database } = await boot();
     const key = await database.createApiKey("manual", "machine", {
@@ -226,6 +268,7 @@ describe("API key quota reset persistence", () => {
       resetInterval: "custom",
       resetIntervalValue: 45,
       resetIntervalUnit: "minutes",
+      expiresAt: "2099-01-01T00:00:00.000Z",
     });
     const before = await database.getApiKeyById(created.id);
     const dump = await database.exportDb();
@@ -283,12 +326,13 @@ describe("API key quota reset persistence", () => {
       "quotaResetInterval",
       "quotaResetIntervalValue",
       "quotaResetIntervalUnit",
+      "quotaExpiresAt",
       "quotaNextResetAt",
     ]));
     expect(await database.getApiKeyById("legacy")).toMatchObject({
       quota: { maxRequests: 5, resetMode: "scheduled", resetInterval: "weekly" },
       usage: { requests: 3, nextResetAt: "2026-12-01T00:00:00.000Z" },
     });
-    expect(fs.readdirSync(path.join(tempDir, "db", "backups")).some((name) => name.startsWith("schema-5-to-6"))).toBe(true);
+    expect(fs.readdirSync(path.join(tempDir, "db", "backups")).some((name) => name.startsWith("schema-5-to-7"))).toBe(true);
   });
 });

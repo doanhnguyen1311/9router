@@ -7,6 +7,7 @@ import {
   KEY_QUOTA_UNLIMITED,
   getExceededKeyQuota,
   getNextQuotaResetAt,
+  isKeyQuotaExpired,
   keyQuotaFromColumns,
   keyQuotaToColumns,
   keyQuotaUsageFromColumns,
@@ -22,11 +23,13 @@ function quotaFromRow(row) {
     row.quotaResetInterval,
     row.quotaResetIntervalValue,
     row.quotaResetIntervalUnit,
+    row.quotaExpiresAt,
   );
 }
 
 function rowToKey(row) {
   if (!row) return null;
+  const quota = quotaFromRow(row);
   return {
     id: row.id,
     key: row.key,
@@ -40,7 +43,8 @@ function rowToKey(row) {
       row.accessAccountRestricted,
       row.accessAccountIds,
     ),
-    quota: quotaFromRow(row),
+    quota,
+    isExpired: isKeyQuotaExpired(quota),
     usage: keyQuotaUsageFromColumns(
       row.quotaUsedCost,
       row.quotaUsedInputTokens,
@@ -135,7 +139,14 @@ export async function getApiKeyById(id) {
 export async function getApiKeyByKey(key) {
   if (!key) return null;
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  let row = null;
+  let changed = false;
+  db.transaction(() => {
+    const applied = applyDueQuotaReset(db, db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]));
+    row = applied.row;
+    changed = applied.changed;
+  });
+  if (changed) notifyApiKeysChanged();
   return rowToKey(row);
 }
 
@@ -144,6 +155,17 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
   const db = await getAdapter();
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
   const result = generateApiKeyWithMachine(machineId);
+  const quotaCols = keyQuotaToColumns(quota);
+  const normalizedQuota = keyQuotaFromColumns(
+    quotaCols.quotaMaxCost,
+    quotaCols.quotaMaxInputTokens,
+    quotaCols.quotaMaxRequests,
+    quotaCols.quotaResetMode,
+    quotaCols.quotaResetInterval,
+    quotaCols.quotaResetIntervalValue,
+    quotaCols.quotaResetIntervalUnit,
+    quotaCols.quotaExpiresAt,
+  );
   const apiKey = {
     id: uuidv4(),
     name,
@@ -152,38 +174,39 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
     isActive: true,
     createdAt: new Date().toISOString(),
     access: { restricted: false, allow: [], accountRestricted: false, accountIds: [] },
-    quota,
+    quota: normalizedQuota,
+    isExpired: isKeyQuotaExpired(normalizedQuota),
     usage: {
       cost: 0,
       inputTokens: 0,
       requests: 0,
       resetAt: null,
-      nextResetAt: quota.resetMode === "scheduled"
+      nextResetAt: normalizedQuota.resetMode === "scheduled"
         ? getNextQuotaResetAt(
-          quota.resetInterval,
+          normalizedQuota.resetInterval,
           new Date(),
-          quota.resetIntervalValue,
-          quota.resetIntervalUnit,
+          normalizedQuota.resetIntervalValue,
+          normalizedQuota.resetIntervalUnit,
         )
         : null,
     },
   };
   const cols = keyAccessToColumns(KEY_ACCESS_UNRESTRICTED);
-  const quotaCols = keyQuotaToColumns(quota);
   db.run(
     `INSERT INTO apiKeys(
       id, key, name, machineId, isActive, createdAt,
       accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
       quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
-      quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaNextResetAt,
+      quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
       quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
     [
       apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
       cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
       quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
       quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
       quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
+      quotaCols.quotaExpiresAt,
       apiKey.usage.nextResetAt,
     ]
   );
@@ -222,14 +245,15 @@ export async function updateApiKey(id, data) {
         accessRestricted = ?, accessAllow = ?, accessAccountRestricted = ?, accessAccountIds = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
-        quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaNextResetAt = ?
+        quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
        WHERE id = ?`,
       [
         merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0,
         cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
-        quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit, nextResetAt,
+        quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
+        quotaCols.quotaExpiresAt, nextResetAt,
         id,
       ]
     );
@@ -249,9 +273,10 @@ export async function deleteApiKey(id) {
 
 export async function validateApiKey(key) {
   const db = await getAdapter();
-  const row = db.get(`SELECT isActive FROM apiKeys WHERE key = ?`, [key]);
+  const row = db.get(`SELECT isActive, quotaExpiresAt FROM apiKeys WHERE key = ?`, [key]);
   if (!row) return false;
-  return row.isActive === 1 || row.isActive === true;
+  const active = row.isActive === 1 || row.isActive === true;
+  return active && !isKeyQuotaExpired({ expiresAt: row.quotaExpiresAt });
 }
 
 // Atomically checks all configured limits and consumes one external request slot.
@@ -269,6 +294,17 @@ export async function admitApiKeyRequest(key) {
     row = applied.row;
 
     const record = rowToKey(row);
+    if (!record.isActive || record.isExpired) {
+      result = {
+        tracked: true,
+        allowed: false,
+        reason: record.isExpired ? "expired" : "inactive",
+        expiresAt: record.quota.expiresAt,
+        quota: record.quota,
+        usage: record.usage,
+      };
+      return;
+    }
     const exceeded = getExceededKeyQuota(record.quota, record.usage);
     if (exceeded) {
       result = { tracked: true, allowed: false, exceeded, quota: record.quota, usage: record.usage };

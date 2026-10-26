@@ -25,6 +25,23 @@ export function isFreeModel(model) {
   return FREE_MODEL_NAMESPACES.some((ns) => lower.startsWith(ns));
 }
 
+const PRICING_THINKING_SUFFIXES = new Set([
+  "none", "off", "auto", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+]);
+
+/**
+ * Remove the virtual thinking suffix used by 9Router model selectors.
+ * Example: `gpt-6.1-sol(xhigh)` is billed as `gpt-6.1-sol`.
+ */
+export function normalizePricingModelId(model) {
+  if (typeof model !== "string") return model;
+  const match = model.match(/^(.*)\(([^()]+)\)\s*$/);
+  if (!match) return model;
+  const suffix = match[2].trim().toLowerCase();
+  if (!PRICING_THINKING_SUFFIXES.has(suffix) && !/^\d+$/.test(suffix)) return model;
+  return match[1].trim();
+}
+
 /**
  * Canonical model pricing — provider-agnostic.
  * Cover all known models; deduplicated across providers.
@@ -420,7 +437,7 @@ export function matchPattern(pattern, model) {
 export function getPricingForModel(provider, model) {
   if (!model) return null;
 
-  // 1. Provider-specific override
+  // 1. Exact provider-specific override (allows an explicitly priced virtual id).
   if (provider && PROVIDER_PRICING[provider]?.[model]) {
     return PROVIDER_PRICING[provider][model];
   }
@@ -428,14 +445,23 @@ export function getPricingForModel(provider, model) {
   // 2. Free namespaces bill $0 regardless of the model name behind them.
   if (isFreeModel(model)) return ZERO_PRICING;
 
+  // Runtime routing keeps a thinking selector on the model used for usage logs
+  // (`model(high)`, `model(8192)`, ...). Pricing belongs to the underlying model.
+  const pricingModel = normalizePricingModelId(model);
+
+  if (provider && PROVIDER_PRICING[provider]?.[pricingModel]) {
+    return PROVIDER_PRICING[provider][pricingModel];
+  }
+  if (isFreeModel(pricingModel)) return ZERO_PRICING;
+
   // 3. Canonical model pricing (strip vendor prefix if needed: "deepseek/deepseek-chat" → "deepseek-chat")
-  const baseModel = model.includes("/") ? model.split("/").pop() : model;
+  const baseModel = pricingModel.includes("/") ? pricingModel.split("/").pop() : pricingModel;
   if (MODEL_PRICING[baseModel]) return MODEL_PRICING[baseModel];
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  if (MODEL_PRICING[pricingModel]) return MODEL_PRICING[pricingModel];
 
   // 4. Pattern match
   for (const { pattern, pricing } of PATTERN_PRICING) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
+    if (matchPattern(pattern, baseModel) || matchPattern(pattern, pricingModel)) {
       return pricing;
     }
   }

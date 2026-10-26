@@ -11,6 +11,25 @@ afterEach(() => {
 });
 
 describe("scheduled API key quota response", () => {
+  it("returns an authentication error when the key has expired", async () => {
+    repository.admitApiKeyRequest.mockResolvedValue({
+      tracked: true,
+      allowed: false,
+      reason: "expired",
+      expiresAt: "2026-10-25T00:00:00.000Z",
+      quota: { expiresAt: "2026-10-25T00:00:00.000Z" },
+      usage: { requests: 4 },
+    });
+
+    const response = await enforceApiKeyQuota(new Request("http://localhost/v1/responses", {
+      headers: { Authorization: "Bearer sk-expired" },
+    }));
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("x-9router-key-expired-at")).toBe("2026-10-25T00:00:00.000Z");
+    expect((await response.json()).error.message).toContain("expired");
+  });
+
   it("returns reset metadata and Retry-After for a scheduled window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-26T00:00:00.000Z"));
