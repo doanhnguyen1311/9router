@@ -548,6 +548,7 @@ a third party under a provider named "Self-hosted".
 | 📝 **Request Logging**                                                            | Debug mode with full request/response logs                                               | Troubleshoot issues easily                        |
 | 💾 **Cloud Sync**                                                                 | Sync config across devices                                                               | Same setup everywhere                             |
 | 📊 **Usage Analytics**                                                            | Track tokens, cost, trends over time                                                     | Optimize spending                                 |
+| 🔐 **Per-Key Access & Usage Limits**                                              | Restrict models, provider accounts, requests, tokens, and estimated cost                 | Control clients independently                     |
 | 🌐 **Deploy Anywhere**                                                            | Localhost, VPS, Docker, Cloudflare Workers                                               | Flexible deployment options                       |
 
 Set `X-9Router-Token-Saver: off` to bypass all token savers for one chat request.
@@ -700,6 +701,29 @@ Seamless translation between formats:
 >
 > Think of it as a "savings tracker" showing how much you're saving by using free models or
 > routing through 9Router!
+
+### 🔐 Custom API Key Access and Usage Limits
+
+Open **Dashboard → Endpoint** to configure a custom API key. **Restrict models** controls the
+exact models, providers, and combos the key may request. **Restrict provider accounts** limits
+credential selection and fallback to the selected accounts; an empty restricted account list
+blocks every credentialed provider. Public providers that require no account are unaffected.
+Both restrictions are independent, so a key can restrict models, accounts, or both.
+
+Each key can also limit total requests, input tokens, estimated cost in USD, or any combination
+of the three. Leave a field blank for unlimited usage. Counters continue until you select
+**Reset usage**; changing a limit does not reset them.
+
+The `PUT /api/keys/{id}` access object is backward compatible and accepts
+`{ restricted, allow, accountRestricted, accountIds }`. Account ids are the provider connection
+ids returned by `GET /api/providers`. Unknown or deleted ids remain fail-closed and never broaden
+access.
+
+When a limit is exhausted, inference requests using that key receive HTTP `429` before another
+provider call is started. Request caps are reserved atomically and are exact. Input-token and
+cost totals are known only after a provider response is recorded, so an already-running final
+request can put either total slightly over its cap. The rejection includes
+`x-9router-quota-kind`, `x-9router-quota-used`, and `x-9router-quota-limit` response headers.
 
 ### 🌐 Deploy Anywhere
 
@@ -942,7 +966,7 @@ These are free services offered by those respective companies:
 - ✅ Cheap tier gets expensive → Auto-fallback to free tier
 - ✅ Never stop coding → Predictable costs
 
-**You're in control:** Set spending limits per provider in dashboard, and 9Router respects them.
+**You're in control:** Set request, input-token, or estimated-cost limits per custom API key in the dashboard.
 
 </details>
 

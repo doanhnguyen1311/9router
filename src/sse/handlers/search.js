@@ -13,7 +13,8 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
-import { getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
+import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
+import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 
 /**
  * Handle web search request for the SSE/Next.js server.
@@ -75,8 +76,12 @@ export async function handleSearch(request) {
 
   // Per-key access control: the provider IS the model here, so a
   // restricted key needs the provider id (or the combo) on its list.
-  const keyAccessDenied = await enforceKeyAccessProvider(await getKeyAccessContext(request), providerInput, comboModels);
+  const keyAccess = await getKeyAccessContext(request);
+  const keyAccessDenied = await enforceKeyAccessProvider(keyAccess, providerInput, comboModels);
   if (keyAccessDenied) return keyAccessDenied;
+  const allowedConnectionIds = getAllowedConnectionIds(keyAccess);
+  const quotaDenied = await enforceApiKeyQuota(request);
+  if (quotaDenied) return quotaDenied;
   if (comboModels) {
     const comboStrategies = settings.comboStrategies || {};
     const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
@@ -85,7 +90,7 @@ export async function handleSearch(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, request, apiKey, settings),
+      handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, request, apiKey, settings, allowedConnectionIds),
       log,
       comboName: providerInput,
       comboStrategy,
@@ -93,10 +98,10 @@ export async function handleSearch(request) {
     });
   }
 
-  return handleSingleProviderSearch(body, providerInput, request, apiKey, settings);
+  return handleSingleProviderSearch(body, providerInput, request, apiKey, settings, allowedConnectionIds);
 }
 
-async function handleSingleProviderSearch(body, providerInput, request, apiKey, settings) {
+async function handleSingleProviderSearch(body, providerInput, request, apiKey, settings, allowedConnectionIds) {
   const query = body.query;
   const providerId = resolveProviderId(providerInput);
   const resolvedProvider = AI_PROVIDERS[providerId];
@@ -170,12 +175,12 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     // Provider that actually owns the connection in use — differs from
     // providerId once we fall back, and error locks must be attributed to it.
     let credentialProviderId = providerId;
-    let credentials = await getProviderCredentials(providerId, excludeConnectionIds, searchLockKey);
+    let credentials = await getProviderCredentials(providerId, excludeConnectionIds, searchLockKey, { allowedConnectionIds });
 
     // Fall back to the related chat provider's credentials when this search
     // provider has none of its own (one key, chat + search).
     if (!credentials && fallbackProviderId) {
-      credentials = await getProviderCredentials(fallbackProviderId, excludeConnectionIds, searchLockKey);
+      credentials = await getProviderCredentials(fallbackProviderId, excludeConnectionIds, searchLockKey, { allowedConnectionIds });
       if (credentials) {
         credentialProviderId = fallbackProviderId;
         log.info("AUTH", `\x1b[32m${providerId} reusing ${fallbackProviderId} credentials\x1b[0m`);

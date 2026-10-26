@@ -1,10 +1,9 @@
 // Per-API-key access control for the /v1/* inference keys.
 //
-// Two modes per key: UNRESTRICTED (default — exactly today's behaviour) or
-// RESTRICTED, where the key may call ONLY the combos and models in its allow
-// list. No wildcards, no deny mode. Matching is exact and case-insensitive, on
-// RESOLVED identities, so every spelling that routes to the same target is
-// treated the same and no spelling can route somewhere the list does not name:
+// Model and provider-account restrictions are independent. Model matching is
+// exact and case-insensitive, on RESOLVED identities, so every spelling that
+// routes to the same target is treated the same and no spelling can route
+// somewhere the allow list does not name:
 //
 //   * a request that routes as a combo (getComboModels — the lookup routing
 //     itself uses) is allowed iff that combo's name is listed;
@@ -29,41 +28,22 @@ import { resolveProviderId } from "@/shared/constants/providers.js";
 import {
   KEY_ACCESS_COMBO_OWNER,
   KEY_ACCESS_PROVIDER_AS_MODEL_KINDS,
+  keyAccountAccessDeniedMessage,
   keyAccessDeniedMessage,
 } from "@/shared/constants/keyAccess.js";
 import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
+import { extractClientApiKey } from "@/shared/utils/requestApiKey.js";
+
+export { extractClientApiKey } from "@/shared/utils/requestApiKey.js";
 
 const lower = (s) => String(s).toLowerCase();
 const canonicalModel = (provider, model) => lower(`${provider}/${model}`);
 
 /**
- * The client key, read from the same places and in the same order as the
- * middleware (src/dashboardGuard.js) reads the key it authorizes a remote
- * /v1 call with: Bearer, x-api-key, x-goog-api-key, ?key=. Handlers' own
- * extractApiKey() only reads the first two, so using it here would let a
- * restricted key sent as x-goog-api-key look like "no key" (= unrestricted).
- */
-export function extractClientApiKey(request) {
-  const headers = request?.headers;
-  if (!headers?.get) return null;
-  const auth = headers.get("Authorization");
-  if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  const xApiKey = headers.get("x-api-key");
-  if (xApiKey) return xApiKey;
-  const googKey = headers.get("x-goog-api-key");
-  if (googKey) return googKey;
-  try {
-    return new URL(request.url).searchParams.get("key") || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Access context for the request's key, or null when the request is
- * unrestricted (no key, unknown key, or a key whose access is unrestricted).
+ * Access context for the request's key, or null when the request is fully
+ * unrestricted (no key, unknown key, or neither access restriction enabled).
  * Keys are only authenticated elsewhere (middleware / requireApiKey); this only
  * decides what an identified key may call.
  */
@@ -71,13 +51,29 @@ export async function getKeyAccessContext(request) {
   const apiKey = extractClientApiKey(request);
   if (!apiKey) return null;
   const record = await getApiKeyByKey(apiKey);
-  if (!record?.access?.restricted) return null;
+  if (!record?.access?.restricted && !record?.access?.accountRestricted) return null;
   return {
     keyId: record.id,
     keyName: record.name || record.id,
+    restricted: record.access.restricted === true,
     allow: record.access.allow || [],
+    accountRestricted: record.access.accountRestricted === true,
+    accountIds: record.access.accountIds || [],
     _sets: null,
   };
+}
+
+// Undefined means no account filter. An empty array is intentional fail-closed:
+// account restriction is enabled but the key has no permitted stored account.
+export function getAllowedConnectionIds(ctx) {
+  return ctx?.accountRestricted ? [...ctx.accountIds] : undefined;
+}
+
+export function enforceKeyAccountAccess(ctx, connectionId) {
+  if (!ctx?.accountRestricted || !connectionId) return null;
+  if (ctx.accountIds.includes(connectionId)) return null;
+  log.warn("AUTH", `key-access: key "${ctx.keyName}" denied provider account`);
+  return errorResponse(HTTP_STATUS.FORBIDDEN, keyAccountAccessDeniedMessage());
 }
 
 // Resolve the allow list once per request: combo names, resolved model ids,
@@ -121,7 +117,7 @@ export function keyAccessDeniedResponse(ctx, requested) {
  * @returns {Promise<Response|null>} a 403 Response, or null when allowed.
  */
 export async function enforceKeyAccess(ctx, requested) {
-  if (!ctx) return null;
+  if (!ctx?.restricted) return null;
   if (typeof requested !== "string" || !requested) return keyAccessDeniedResponse(ctx, String(requested ?? ""));
   const sets = await getAllowSets(ctx);
   const comboModels = await getComboModels(requested);
@@ -138,7 +134,7 @@ export async function enforceKeyAccess(ctx, requested) {
  * an unverifiable target is not an allowed one.
  */
 export async function enforceKeyAccessResolved(ctx, requested, provider, model) {
-  if (!ctx) return null;
+  if (!ctx?.restricted) return null;
   const label = requested || (provider ? `${provider}/${model ?? ""}` : "");
   if (!provider || !model) return keyAccessDeniedResponse(ctx, label);
   const sets = await getAllowSets(ctx);
@@ -150,7 +146,7 @@ export async function enforceKeyAccessResolved(ctx, requested, provider, model) 
  * @param {string[]|null} comboModels - routing's own combo resolution for `requested`
  */
 export async function enforceKeyAccessProvider(ctx, requested, comboModels) {
-  if (!ctx) return null;
+  if (!ctx?.restricted) return null;
   if (typeof requested !== "string" || !requested) return keyAccessDeniedResponse(ctx, String(requested ?? ""));
   const sets = await getAllowSets(ctx);
   const allowed = comboModels
@@ -166,7 +162,7 @@ export async function enforceKeyAccessProvider(ctx, requested, comboModels) {
  * model just shortens the fallback list, so combo failover is unaffected.
  */
 export async function filterAdapterModels(ctx, augmented, original) {
-  if (!ctx || !Array.isArray(augmented)) return augmented;
+  if (!ctx?.restricted || !Array.isArray(augmented)) return augmented;
   const keep = new Set(original || []);
   const out = [];
   for (const m of augmented) {
@@ -178,7 +174,7 @@ export async function filterAdapterModels(ctx, augmented, original) {
 
 /** /v1/models: a restricted key sees only the combos and models it may call. */
 export async function filterModelsListForKey(ctx, list) {
-  if (!ctx || !Array.isArray(list)) return list;
+  if (!ctx?.restricted || !Array.isArray(list)) return list;
   const sets = await getAllowSets(ctx);
   const out = [];
   for (const entry of list) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getApiKeys, createApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { validateKeyQuotaInput } from "@/shared/utils/keyQuota.js";
 
 export const dynamic = "force-dynamic";
 
@@ -19,21 +20,31 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { name } = body;
+    const { name, quota } = body;
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
+    let checkedQuota;
+    if (quota !== undefined) {
+      checkedQuota = validateKeyQuotaInput(quota);
+      if (!checkedQuota.ok) {
+        return NextResponse.json({ error: checkedQuota.error }, { status: 400 });
+      }
+    }
+
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
-    const apiKey = await createApiKey(name, machineId);
+    const apiKey = await createApiKey(name, machineId, checkedQuota?.value);
 
     return NextResponse.json({
       key: apiKey.key,
       name: apiKey.name,
       id: apiKey.id,
       machineId: apiKey.machineId,
+      quota: apiKey.quota,
+      usage: apiKey.usage,
     }, { status: 201 });
   } catch (error) {
     console.log("Error creating key:", error);

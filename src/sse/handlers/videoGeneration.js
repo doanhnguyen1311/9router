@@ -7,7 +7,13 @@ import {
 } from "../services/auth.js";
 import { getSettings, getProviderConnectionById } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
-import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
+import {
+  enforceKeyAccessResolved,
+  enforceKeyAccountAccess,
+  getAllowedConnectionIds,
+  getKeyAccessContext,
+} from "../services/keyAccess.js";
+import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { handleVideoProxyCore, getVideoConfig, sanitizeSecrets } from "open-sse/handlers/videoCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -122,10 +128,19 @@ export async function handleVideoCreate(request, action) {
 
   // Per-key access control: the routed provider/model must be listed. A body
   // we cannot read a model from (multipart) is denied for restricted keys.
+  const keyAccess = await getKeyAccessContext(request);
   const keyAccessDenied = await enforceKeyAccessResolved(
-    await getKeyAccessContext(request), bodyInfo.parsed?.model ? String(bodyInfo.parsed.model) : "", provider, model
+    keyAccess, bodyInfo.parsed?.model ? String(bodyInfo.parsed.model) : "", provider, model
   );
   if (keyAccessDenied) return keyAccessDenied;
+
+  const preferredConnectionId = request.headers.get("x-connection-id") || null;
+  const keyAccountDenied = enforceKeyAccountAccess(keyAccess, preferredConnectionId);
+  if (keyAccountDenied) return keyAccountDenied;
+  const allowedConnectionIds = getAllowedConnectionIds(keyAccess);
+
+  const quotaDenied = await enforceApiKeyQuota(request);
+  if (quotaDenied) return quotaDenied;
 
   // Strip the provider prefix (e.g. "xai/grok-imagine-video") before forwarding;
   // otherwise forward the original bytes untouched.
@@ -134,7 +149,6 @@ export async function handleVideoCreate(request, action) {
     forwardBody = JSON.stringify({ ...bodyInfo.parsed, model });
   }
 
-  const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const idempotencyKey = request.headers.get("idempotency-key") || null;
 
   // noAuth providers — executor-driven generation, no credential needed
@@ -158,7 +172,10 @@ export async function handleVideoCreate(request, action) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+      allowedConnectionIds,
+    });
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
@@ -229,9 +246,16 @@ export async function handleVideoGet(request, requestId) {
   if (!requestId) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing video request id");
 
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
+  const keyAccess = await getKeyAccessContext(request);
+  const keyAccountDenied = enforceKeyAccountAccess(keyAccess, preferredConnectionId);
+  if (keyAccountDenied) return keyAccountDenied;
+  const allowedConnectionIds = getAllowedConnectionIds(keyAccess);
   const provider = await resolveGetProvider(request, preferredConnectionId);
 
-  const credentials = await getProviderCredentials(provider, null, null, { preferredConnectionId });
+  const credentials = await getProviderCredentials(provider, null, null, {
+    preferredConnectionId,
+    allowedConnectionIds,
+  });
   if (!credentials || credentials.allRateLimited) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
   }

@@ -19,6 +19,7 @@ import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
+import KeyQuotaControls from "./components/KeyQuotaControls";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -675,7 +676,7 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
-  // Save a key's access (restricted flag + allow list).
+  // Save a key's model and provider-account access policy.
   const handleUpdateKeyAccess = async (id, access) => {
     try {
       const res = await fetch(`/api/keys/${id}`, {
@@ -691,6 +692,39 @@ export default function APIPageClient({ machineId }) {
       }
     } catch (error) {
       console.log("Error updating key access:", error);
+    }
+  };
+
+  const handleUpdateKeyQuota = async (id, quota) => {
+    try {
+      const res = await fetch(`/api/keys/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quota }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.key) {
+        setKeys(prev => prev.map(k => k.id === id ? data.key : k));
+        return { ok: true };
+      }
+      return { ok: false, error: data.error || `Request failed (${res.status})` };
+    } catch (error) {
+      console.log("Error updating key quota:", error);
+      return { ok: false, error: error.message };
+    }
+  };
+
+  const handleResetKeyUsage = async (id) => {
+    try {
+      const res = await fetch(`/api/keys/${id}/reset-usage`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.key) {
+        setKeys(prev => prev.map(k => k.id === id ? data.key : k));
+      } else {
+        console.log("Error resetting key usage:", data.error || res.status);
+      }
+    } catch (error) {
+      console.log("Error resetting key usage:", error);
     }
   };
 
@@ -1064,7 +1098,24 @@ export default function APIPageClient({ machineId }) {
                       message: `Restrict API key "${key.name}"?\n\nIt will only be able to call the combos and models you add. Until you add one, it can call nothing.`,
                       onConfirm: async () => {
                         setConfirmState(null);
-                        handleUpdateKeyAccess(key.id, { restricted: true, allow: key.access?.allow || [] });
+                        handleUpdateKeyAccess(key.id, {
+                          restricted: true,
+                          allow: key.access?.allow || [],
+                          accountRestricted: key.access?.accountRestricted === true,
+                          accountIds: key.access?.accountIds || [],
+                        });
+                      }
+                    })}
+                  />
+                  <KeyQuotaControls
+                    apiKey={key}
+                    onSave={(quota) => handleUpdateKeyQuota(key.id, quota)}
+                    onRequestReset={() => setConfirmState({
+                      title: "Reset API Key Usage",
+                      message: `Reset request, input-token, and cost usage for API key "${key.name}"?\n\nThe configured limits will be kept. This cannot be undone.`,
+                      onConfirm: async () => {
+                        setConfirmState(null);
+                        await handleResetKeyUsage(key.id);
                       }
                     })}
                   />

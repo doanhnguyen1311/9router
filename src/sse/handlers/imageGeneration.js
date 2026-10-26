@@ -7,7 +7,13 @@ import {
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
-import { getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
+import {
+  enforceKeyAccess,
+  enforceKeyAccountAccess,
+  getAllowedConnectionIds,
+  getKeyAccessContext,
+} from "../services/keyAccess.js";
+import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { getImageAdapter } from "open-sse/handlers/imageProviders/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -70,8 +76,15 @@ export async function handleImageGeneration(request) {
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
 
   // Per-key access control: requested target, before combo expansion.
-  const keyAccessDenied = await enforceKeyAccess(await getKeyAccessContext(request), modelStr);
+  const keyAccess = await getKeyAccessContext(request);
+  const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
   if (keyAccessDenied) return keyAccessDenied;
+  const keyAccountDenied = enforceKeyAccountAccess(keyAccess, preferredConnectionId);
+  if (keyAccountDenied) return keyAccountDenied;
+  const allowedConnectionIds = getAllowedConnectionIds(keyAccess);
+
+  const quotaDenied = await enforceApiKeyQuota(request);
+  if (quotaDenied) return quotaDenied;
 
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
   const comboModels = await getComboModels(modelStr);
@@ -83,7 +96,9 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, {
+        wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, allowedConnectionIds,
+      }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -91,10 +106,19 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname });
+  return handleSingleModelImage(body, modelStr, {
+    wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, allowedConnectionIds,
+  });
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint } = {}) {
+async function handleSingleModelImage(body, modelStr, {
+  wantsStream,
+  binaryOutput,
+  preferredConnectionId,
+  apiKey,
+  endpoint,
+  allowedConnectionIds,
+} = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -118,7 +142,10 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+      allowedConnectionIds,
+    });
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {

@@ -3,6 +3,8 @@ import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/con
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { extractClientApiKey } from "@/shared/utils/requestApiKey.js";
+import { filterConnectionsByAllowedIds } from "@/shared/utils/keyAccess.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
 
@@ -32,6 +34,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
   const requestedModel = options?.requestedModel || model;
+  const allowedConnectionIds = options?.allowedConnectionIds;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -71,11 +74,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       };
     }
 
-    const connections = await getProviderConnections({ provider: providerId, isActive: true });
-    log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
+    const allConnections = await getProviderConnections({ provider: providerId, isActive: true });
+    const connections = filterConnectionsByAllowedIds(allConnections, allowedConnectionIds);
+    log.debug("AUTH", `${provider} | eligible connections: ${connections.length}/${allConnections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
-      log.warn("AUTH", `No credentials for ${provider}`);
+      log.warn("AUTH", allowedConnectionIds === undefined
+        ? `No credentials for ${provider}`
+        : `No permitted credentials for ${provider}`);
       return null;
     }
 
@@ -348,19 +354,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
  * Extract API key from request headers
  */
 export function extractApiKey(request) {
-  // Check Authorization header first
-  const authHeader = request.headers.get("Authorization");
-  if (authHeader?.startsWith("Bearer ")) {
-    return authHeader.slice(7);
-  }
-
-  // Check Anthropic x-api-key header
-  const xApiKey = request.headers.get("x-api-key");
-  if (xApiKey) {
-    return xApiKey;
-  }
-
-  return null;
+  return extractClientApiKey(request);
 }
 
 /**

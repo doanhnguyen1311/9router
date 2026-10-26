@@ -290,6 +290,19 @@ export async function saveRequestUsage(entry) {
         ]
       );
 
+      // Per-key quotas use durable counters rather than re-scanning usage history.
+      // Request count is consumed at admission; exact prompt tokens and calculated
+      // cost become known here, after the upstream response reports usage.
+      if (entry.apiKey && typeof entry.apiKey === "string") {
+        db.run(
+          `UPDATE apiKeys SET
+            quotaUsedInputTokens = COALESCE(quotaUsedInputTokens, 0) + ?,
+            quotaUsedCost = COALESCE(quotaUsedCost, 0) + ?
+           WHERE key = ?`,
+          [Math.max(0, promptTokens), Math.max(0, entry.cost || 0), entry.apiKey],
+        );
+      }
+
       const dateKey = getLocalDateKey(entry.timestamp);
       const row = db.get(`SELECT data FROM usageDaily WHERE dateKey = ?`, [dateKey]);
       const day = row ? parseJson(row.data, {}) : {

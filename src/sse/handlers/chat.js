@@ -26,7 +26,8 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 
 /**
@@ -98,11 +99,15 @@ export async function handleChat(request, clientRawRequest = null) {
   const keyAccess = await getKeyAccessContext(request);
   const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
   if (keyAccessDenied) return keyAccessDenied;
+  const allowedConnectionIds = getAllowedConnectionIds(keyAccess);
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
   const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
   if (bypassResponse) return bypassResponse.response || bypassResponse;
+
+  const quotaDenied = await enforceApiKeyQuota(request);
+  if (quotaDenied) return quotaDenied;
 
   const requiredCapabilities = detectRequiredCapabilities(body);
 
@@ -127,7 +132,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, allowedConnectionIds);
         },
         log,
         comboName: modelStr,
@@ -143,7 +148,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, allowedConnectionIds),
         adapterAdded
       ),
       log,
@@ -159,6 +164,7 @@ export async function handleChat(request, clientRawRequest = null) {
             body: b,
             models: m,
             routerModel: comboCfg.routerModel,
+            allowedConnectionIds,
             log,
           })
         : null,
@@ -175,7 +181,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, allowedConnectionIds),
         adapterAdded
       ),
       log,
@@ -184,13 +190,21 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null);
+  return handleSingleModelChat(
+    body,
+    modelStr,
+    clientRawRequest,
+    request,
+    apiKey,
+    contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null,
+    allowedConnectionIds,
+  );
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, allowedConnectionIds = undefined) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -220,7 +234,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, allowedConnectionIds);
           },
           log,
           comboName: modelStr,
@@ -238,7 +252,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, allowedConnectionIds),
           adapterAdded
         ),
         log,
@@ -254,6 +268,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               body: b,
               models: m,
               routerModel: comboCfg.routerModel,
+              allowedConnectionIds,
               log,
             })
           : null,
@@ -277,7 +292,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastHeaders = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      requestedModel: requestedModel || model,
+      allowedConnectionIds,
+    });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {

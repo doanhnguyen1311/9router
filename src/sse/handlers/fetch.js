@@ -13,7 +13,8 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
-import { getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
+import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
+import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
 
 /**
@@ -95,8 +96,12 @@ export async function handleFetch(request) {
 
   // Per-key access control: the provider IS the model here, so a
   // restricted key needs the provider id (or the combo) on its list.
-  const keyAccessDenied = await enforceKeyAccessProvider(await getKeyAccessContext(request), providerInput, comboModels);
+  const keyAccess = await getKeyAccessContext(request);
+  const keyAccessDenied = await enforceKeyAccessProvider(keyAccess, providerInput, comboModels);
   if (keyAccessDenied) return keyAccessDenied;
+  const allowedConnectionIds = getAllowedConnectionIds(keyAccess);
+  const quotaDenied = await enforceApiKeyQuota(request);
+  if (quotaDenied) return quotaDenied;
   if (comboModels) {
     const comboStrategies = settings.comboStrategies || {};
     const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
@@ -105,7 +110,7 @@ export async function handleFetch(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleProviderFetch(b, m, request, apiKey, settings),
+      handleSingleModel: (b, m) => handleSingleProviderFetch(b, m, request, apiKey, settings, allowedConnectionIds),
       log,
       comboName: providerInput,
       comboStrategy,
@@ -113,10 +118,10 @@ export async function handleFetch(request) {
     });
   }
 
-  return handleSingleProviderFetch(body, providerInput, request, apiKey, settings);
+  return handleSingleProviderFetch(body, providerInput, request, apiKey, settings, allowedConnectionIds);
 }
 
-async function handleSingleProviderFetch(body, providerInput, request, apiKey, settings) {
+async function handleSingleProviderFetch(body, providerInput, request, apiKey, settings, allowedConnectionIds) {
   const targetUrl = body.url;
   const format = body.format;
   const maxCharacters = body.max_characters;
@@ -171,7 +176,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
   const fetchLockKey = `webfetch:${providerId}`;
 
   while (true) {
-    const credentials = await getProviderCredentials(providerId, excludeConnectionIds, fetchLockKey);
+    const credentials = await getProviderCredentials(providerId, excludeConnectionIds, fetchLockKey, { allowedConnectionIds });
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {

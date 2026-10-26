@@ -22,6 +22,7 @@ import {
  * @param {object} opts.body - Client request body
  * @param {string[]} opts.models - Combo model candidate array
  * @param {string} [opts.routerModel] - System One router model (defaults to oc/jev-1.13-free)
+ * @param {string[]} [opts.allowedConnectionIds] - Provider accounts permitted for this API key
  * @param {object} [opts.log] - Logger
  * @param {number} [opts.timeoutMs=DEFAULT_SYSTEMONE_TIMEOUT_MS] - Hard ceiling for router evaluation
  * @returns {Promise<{ choice: string, confidence: number|null, probabilities: Record<string, number>|null } | null>}
@@ -30,6 +31,7 @@ export async function resolveSmartChoice({
   body,
   models,
   routerModel = DEFAULT_SYSTEMONE_ROUTER_MODEL,
+  allowedConnectionIds,
   log,
   timeoutMs = DEFAULT_SYSTEMONE_TIMEOUT_MS,
 }) {
@@ -56,7 +58,7 @@ export async function resolveSmartChoice({
     }
 
     const { provider, model } = modelInfo;
-    const credentials = await getProviderCredentials(provider, new Set(), model);
+    const credentials = await getProviderCredentials(provider, new Set(), model, { allowedConnectionIds });
     if (!credentials || credentials.allRateLimited) {
       log?.warn?.("COMBO", `smart-router: no credentials available for router provider "${provider}"`);
       return null;

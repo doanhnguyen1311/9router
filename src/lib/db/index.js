@@ -3,6 +3,7 @@ import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 import { keyAccessFromColumns, keyAccessToColumns, validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
+import { keyQuotaFromColumns, keyQuotaToColumns, validateKeyQuotaInput } from "@/shared/utils/keyQuota.js";
 
 // Settings
 export {
@@ -32,6 +33,7 @@ export {
 // API keys
 export {
   getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  admitApiKeyRequest, resetApiKeyUsage,
 } from "./repos/apiKeysRepo.js";
 
 // Combos
@@ -79,7 +81,27 @@ export async function exportDb() {
     providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, access: keyAccessFromColumns(r.accessRestricted, r.accessAllow) })),
+    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({
+      id: r.id,
+      key: r.key,
+      name: r.name,
+      machineId: r.machineId,
+      isActive: r.isActive === 1,
+      createdAt: r.createdAt,
+      access: keyAccessFromColumns(
+        r.accessRestricted,
+        r.accessAllow,
+        r.accessAccountRestricted,
+        r.accessAccountIds,
+      ),
+      quota: keyQuotaFromColumns(r.quotaMaxCost, r.quotaMaxInputTokens, r.quotaMaxRequests),
+      usage: {
+        cost: Math.max(0, Number(r.quotaUsedCost) || 0),
+        inputTokens: Math.max(0, Number(r.quotaUsedInputTokens) || 0),
+        requests: Math.max(0, Number(r.quotaUsedRequests) || 0),
+        resetAt: r.quotaUsageResetAt || null,
+      },
+    })),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -147,9 +169,32 @@ export async function importDb(payload) {
         access = checked.value;
       }
       const cols = keyAccessToColumns(access);
+      let quota = { maxCost: null, maxInputTokens: null, maxRequests: null };
+      if (k.quota !== undefined) {
+        const checked = validateKeyQuotaInput(k.quota);
+        if (!checked.ok) throw new Error(`apiKeys ${k.id}: ${checked.error}`);
+        quota = checked.value;
+      }
+      const quotaCols = keyQuotaToColumns(quota);
+      const usage = k.usage && typeof k.usage === "object" && !Array.isArray(k.usage) ? k.usage : {};
+      const usageCost = Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : 0;
+      const usageInputTokens = Number.isSafeInteger(usage.inputTokens) && usage.inputTokens >= 0 ? usage.inputTokens : 0;
+      const usageRequests = Number.isSafeInteger(usage.requests) && usage.requests >= 0 ? usage.requests : 0;
+      const usageResetAt = typeof usage.resetAt === "string" && usage.resetAt ? usage.resetAt : null;
       db.run(
-        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, accessRestricted, accessAllow) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-        [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), cols.accessRestricted, cols.accessAllow]
+        `INSERT OR REPLACE INTO apiKeys(
+          id, key, name, machineId, isActive, createdAt,
+          accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
+          quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
+          quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
+          k.createdAt || new Date().toISOString(),
+          cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
+          quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
+          usageCost, usageInputTokens, usageRequests, usageResetAt,
+        ]
       );
     }
     for (const c of payload.combos || []) {

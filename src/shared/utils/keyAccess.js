@@ -26,21 +26,52 @@ export function normalizeAllowList(list) {
   return out;
 }
 
+// Connection ids are opaque, case-sensitive identifiers. Keep their exact
+// spelling while trimming and de-duplicating them.
+export function normalizeAccountIds(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+export function filterConnectionsByAllowedIds(connections, allowedConnectionIds) {
+  if (!Array.isArray(connections) || allowedConnectionIds === undefined) return connections;
+  const allowed = new Set(normalizeAccountIds(allowedConnectionIds));
+  return connections.filter((connection) => allowed.has(connection?.id));
+}
+
 /**
- * Build the access object from the two apiKeys columns.
+ * Build the access object from the model and account access columns.
  *
  * Fails CLOSED: the restricted flag has its own INTEGER column, so a corrupt or
  * unparsable allow list can only ever shrink what a restricted key may call
  * (to nothing); it can never turn a restricted key into an unrestricted one.
  */
-export function keyAccessFromColumns(restrictedCol, allowCol) {
+export function keyAccessFromColumns(restrictedCol, allowCol, accountRestrictedCol, accountIdsCol) {
   const restricted = restrictedCol === 1 || restrictedCol === true;
-  if (!restricted) return { restricted: false, allow: [] };
   let parsed = [];
-  if (typeof allowCol === "string" && allowCol) {
+  if (restricted && typeof allowCol === "string" && allowCol) {
     try { parsed = JSON.parse(allowCol); } catch { parsed = []; }
   }
-  return { restricted: true, allow: normalizeAllowList(parsed) };
+  const accountRestricted = accountRestrictedCol === 1 || accountRestrictedCol === true;
+  let parsedAccountIds = [];
+  if (accountRestricted && typeof accountIdsCol === "string" && accountIdsCol) {
+    try { parsedAccountIds = JSON.parse(accountIdsCol); } catch { parsedAccountIds = []; }
+  }
+  return {
+    restricted,
+    allow: restricted ? normalizeAllowList(parsed) : [],
+    accountRestricted,
+    accountIds: accountRestricted ? normalizeAccountIds(parsedAccountIds) : [],
+  };
 }
 
 /** Columns to persist for an access object (already validated/normalized). */
@@ -49,19 +80,22 @@ export function keyAccessToColumns(access) {
   return {
     accessRestricted: value.restricted ? 1 : 0,
     accessAllow: JSON.stringify(value.restricted ? normalizeAllowList(value.allow) : []),
+    accessAccountRestricted: value.accountRestricted ? 1 : 0,
+    accessAccountIds: JSON.stringify(value.accountRestricted ? normalizeAccountIds(value.accountIds) : []),
   };
 }
 
 /**
- * Validate client input for an access update ({ restricted, allow }).
+ * Validate client input for an access update
+ * ({ restricted, allow, accountRestricted, accountIds }).
  * Rejects rather than repairs: wrong types, too many entries, overlong entries.
- * @returns {{ ok: true, value: {restricted: boolean, allow: string[]} } | { ok: false, error: string }}
+ * @returns {{ ok: true, value: {restricted: boolean, allow: string[], accountRestricted: boolean, accountIds: string[]} } | { ok: false, error: string }}
  */
 export function validateKeyAccessInput(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return { ok: false, error: "access must be an object { restricted, allow }" };
+    return { ok: false, error: "access must be an object" };
   }
-  const extra = Object.keys(input).filter((k) => k !== "restricted" && k !== "allow");
+  const extra = Object.keys(input).filter((k) => !["restricted", "allow", "accountRestricted", "accountIds"].includes(k));
   if (extra.length) return { ok: false, error: `access: unexpected field(s) ${extra.join(", ")}` };
   if (typeof input.restricted !== "boolean") {
     return { ok: false, error: "access.restricted must be a boolean" };
@@ -76,5 +110,27 @@ export function validateKeyAccessInput(input) {
   if (allow.some((e) => e.trim().length > KEY_ACCESS_MAX_ENTRY_LENGTH)) {
     return { ok: false, error: `access.allow entries must be at most ${KEY_ACCESS_MAX_ENTRY_LENGTH} characters` };
   }
-  return { ok: true, value: { restricted: input.restricted, allow: normalizeAllowList(allow) } };
+  const accountRestricted = input.accountRestricted === undefined ? false : input.accountRestricted;
+  if (typeof accountRestricted !== "boolean") {
+    return { ok: false, error: "access.accountRestricted must be a boolean" };
+  }
+  const accountIds = input.accountIds === undefined ? [] : input.accountIds;
+  if (!Array.isArray(accountIds) || accountIds.some((e) => typeof e !== "string")) {
+    return { ok: false, error: "access.accountIds must be an array of strings" };
+  }
+  if (accountIds.length > KEY_ACCESS_MAX_ENTRIES) {
+    return { ok: false, error: `access.accountIds has more than ${KEY_ACCESS_MAX_ENTRIES} entries` };
+  }
+  if (accountIds.some((e) => e.trim().length > KEY_ACCESS_MAX_ENTRY_LENGTH)) {
+    return { ok: false, error: `access.accountIds entries must be at most ${KEY_ACCESS_MAX_ENTRY_LENGTH} characters` };
+  }
+  return {
+    ok: true,
+    value: {
+      restricted: input.restricted,
+      allow: input.restricted ? normalizeAllowList(allow) : [],
+      accountRestricted,
+      accountIds: accountRestricted ? normalizeAccountIds(accountIds) : [],
+    },
+  };
 }
