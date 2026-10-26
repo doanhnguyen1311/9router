@@ -3,7 +3,15 @@ import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 import { keyAccessFromColumns, keyAccessToColumns, validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
-import { keyQuotaFromColumns, keyQuotaToColumns, validateKeyQuotaInput } from "@/shared/utils/keyQuota.js";
+import {
+  KEY_QUOTA_UNLIMITED,
+  getNextQuotaResetAt,
+  keyQuotaFromColumns,
+  keyQuotaToColumns,
+  keyQuotaUsageFromColumns,
+  validateKeyQuotaInput,
+} from "@/shared/utils/keyQuota.js";
+import { notifyApiKeysChanged } from "@/lib/apiKeyEvents.js";
 
 // Settings
 export {
@@ -94,13 +102,22 @@ export async function exportDb() {
         r.accessAccountRestricted,
         r.accessAccountIds,
       ),
-      quota: keyQuotaFromColumns(r.quotaMaxCost, r.quotaMaxInputTokens, r.quotaMaxRequests),
-      usage: {
-        cost: Math.max(0, Number(r.quotaUsedCost) || 0),
-        inputTokens: Math.max(0, Number(r.quotaUsedInputTokens) || 0),
-        requests: Math.max(0, Number(r.quotaUsedRequests) || 0),
-        resetAt: r.quotaUsageResetAt || null,
-      },
+      quota: keyQuotaFromColumns(
+        r.quotaMaxCost,
+        r.quotaMaxInputTokens,
+        r.quotaMaxRequests,
+        r.quotaResetMode,
+        r.quotaResetInterval,
+        r.quotaResetIntervalValue,
+        r.quotaResetIntervalUnit,
+      ),
+      usage: keyQuotaUsageFromColumns(
+        r.quotaUsedCost,
+        r.quotaUsedInputTokens,
+        r.quotaUsedRequests,
+        r.quotaUsageResetAt,
+        r.quotaNextResetAt,
+      ),
     })),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
@@ -169,7 +186,7 @@ export async function importDb(payload) {
         access = checked.value;
       }
       const cols = keyAccessToColumns(access);
-      let quota = { maxCost: null, maxInputTokens: null, maxRequests: null };
+      let quota = KEY_QUOTA_UNLIMITED;
       if (k.quota !== undefined) {
         const checked = validateKeyQuotaInput(k.quota);
         if (!checked.ok) throw new Error(`apiKeys ${k.id}: ${checked.error}`);
@@ -181,18 +198,32 @@ export async function importDb(payload) {
       const usageInputTokens = Number.isSafeInteger(usage.inputTokens) && usage.inputTokens >= 0 ? usage.inputTokens : 0;
       const usageRequests = Number.isSafeInteger(usage.requests) && usage.requests >= 0 ? usage.requests : 0;
       const usageResetAt = typeof usage.resetAt === "string" && usage.resetAt ? usage.resetAt : null;
+      const parsedNextReset = typeof usage.nextResetAt === "string" ? new Date(usage.nextResetAt) : null;
+      const usageNextResetAt = quota.resetMode === "scheduled"
+        ? (parsedNextReset && Number.isFinite(parsedNextReset.getTime())
+          ? parsedNextReset.toISOString()
+          : getNextQuotaResetAt(
+            quota.resetInterval,
+            new Date(),
+            quota.resetIntervalValue,
+            quota.resetIntervalUnit,
+          ))
+        : null;
       db.run(
         `INSERT OR REPLACE INTO apiKeys(
           id, key, name, machineId, isActive, createdAt,
           accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
+          quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
           k.createdAt || new Date().toISOString(),
           cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
           quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
+          quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
+          quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit, usageNextResetAt,
           usageCost, usageInputTokens, usageRequests, usageResetAt,
         ]
       );
@@ -218,6 +249,7 @@ export async function importDb(payload) {
     }
   });
 
+  notifyApiKeysChanged();
   return await exportDb();
 }
 

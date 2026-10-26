@@ -38,7 +38,20 @@ export async function PUT(request, { params }) {
       updateData.access = checked.value;
     }
     if (quota !== undefined) {
-      const checked = validateKeyQuotaInput(quota);
+      // Legacy clients only know the three numeric limits. Preserve the reset
+      // policy unless the request explicitly changes it.
+      const quotaInput = { ...quota };
+      if (quotaInput.resetMode === undefined) {
+        quotaInput.resetMode = existing.quota.resetMode;
+        quotaInput.resetInterval = existing.quota.resetInterval;
+        quotaInput.resetIntervalValue = existing.quota.resetIntervalValue;
+        quotaInput.resetIntervalUnit = existing.quota.resetIntervalUnit;
+      } else if (quotaInput.resetMode === "manual" && quotaInput.resetInterval === undefined) {
+        quotaInput.resetInterval = null;
+        quotaInput.resetIntervalValue = null;
+        quotaInput.resetIntervalUnit = null;
+      }
+      const checked = validateKeyQuotaInput(quotaInput);
       if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
       updateData.quota = checked.value;
     }

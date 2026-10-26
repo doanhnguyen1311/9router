@@ -20,9 +20,14 @@ import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
 import KeyQuotaControls from "./components/KeyQuotaControls";
+
+const KEY_SYNC_FALLBACK_MS = 15000;
+const KEY_SYNC_DEBOUNCE_MS = 150;
+
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [keySyncStatus, setKeySyncStatus] = useState("connecting");
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
@@ -103,6 +108,72 @@ export default function APIPageClient({ machineId }) {
   useEffect(() => {
     fetchData();
     loadSettings();
+  }, []);
+
+  // Keep saved access policies and quota meters current across requests and
+  // browser tabs. SSE carries only an invalidation event; the snapshot still
+  // comes from the authenticated /api/keys route. A slow poll covers reconnects
+  // and multi-process deployments where an in-memory event may land elsewhere.
+  useEffect(() => {
+    let active = true;
+    let refreshTimer = null;
+    let refreshing = false;
+    let refreshAgain = false;
+
+    const refreshKeys = async () => {
+      if (!active) return;
+      if (refreshing) {
+        refreshAgain = true;
+        return;
+      }
+      refreshing = true;
+      try {
+        const response = await fetch("/api/keys", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (active) setKeys(data.keys || []);
+      } catch {
+        // EventSource reconnect and the fallback timer will retry.
+      } finally {
+        refreshing = false;
+        if (refreshAgain && active) {
+          refreshAgain = false;
+          refreshTimer = setTimeout(refreshKeys, KEY_SYNC_DEBOUNCE_MS);
+        }
+      }
+    };
+
+    const scheduleRefresh = () => {
+      if (!active) return;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(refreshKeys, KEY_SYNC_DEBOUNCE_MS);
+    };
+
+    const source = new EventSource("/api/keys/stream");
+    source.onopen = () => {
+      if (active) setKeySyncStatus("live");
+    };
+    source.onerror = () => {
+      if (active) setKeySyncStatus("reconnecting");
+    };
+    source.addEventListener("keys-changed", scheduleRefresh);
+
+    const onVisible = () => {
+      if (!document.hidden) scheduleRefresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    const fallback = setInterval(() => {
+      if (!document.hidden) scheduleRefresh();
+    }, KEY_SYNC_FALLBACK_MS);
+
+    return () => {
+      active = false;
+      source.removeEventListener("keys-changed", scheduleRefresh);
+      source.close();
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(fallback);
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
   }, []);
 
   // Status poll: only while degraded (not yet reachable). Stop once healthy to avoid spam.
@@ -1015,6 +1086,13 @@ export default function APIPageClient({ machineId }) {
           <h2 className="text-lg font-semibold flex items-center gap-2">
             <span className="material-symbols-outlined text-primary">vpn_key</span>
             API Keys
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${keySyncStatus === "live" ? "bg-green-500/10 text-green-600 dark:text-green-400" : "bg-orange-500/10 text-orange-600 dark:text-orange-400"}`}
+              title={keySyncStatus === "live" ? "API key configuration and usage update in real time" : "Real-time sync is reconnecting; periodic refresh remains active"}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${keySyncStatus === "live" ? "bg-green-500" : "bg-orange-500"}`} />
+              {keySyncStatus === "live" ? "Live" : "Syncing"}
+            </span>
           </h2>
           <Button icon="add" onClick={() => setShowAddModal(true)}>
             Create Key

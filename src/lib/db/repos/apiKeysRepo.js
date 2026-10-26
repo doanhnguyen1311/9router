@@ -2,13 +2,28 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
+import { notifyApiKeysChanged } from "@/lib/apiKeyEvents.js";
 import {
   KEY_QUOTA_UNLIMITED,
   getExceededKeyQuota,
+  getNextQuotaResetAt,
   keyQuotaFromColumns,
   keyQuotaToColumns,
   keyQuotaUsageFromColumns,
+  resolveQuotaResetSchedule,
 } from "@/shared/utils/keyQuota.js";
+
+function quotaFromRow(row) {
+  return keyQuotaFromColumns(
+    row.quotaMaxCost,
+    row.quotaMaxInputTokens,
+    row.quotaMaxRequests,
+    row.quotaResetMode,
+    row.quotaResetInterval,
+    row.quotaResetIntervalValue,
+    row.quotaResetIntervalUnit,
+  );
+}
 
 function rowToKey(row) {
   if (!row) return null;
@@ -25,25 +40,94 @@ function rowToKey(row) {
       row.accessAccountRestricted,
       row.accessAccountIds,
     ),
-    quota: keyQuotaFromColumns(row.quotaMaxCost, row.quotaMaxInputTokens, row.quotaMaxRequests),
+    quota: quotaFromRow(row),
     usage: keyQuotaUsageFromColumns(
       row.quotaUsedCost,
       row.quotaUsedInputTokens,
       row.quotaUsedRequests,
       row.quotaUsageResetAt,
+      row.quotaNextResetAt,
     ),
   };
 }
 
+// Must be called inside a transaction. It lazily creates/advances a schedule
+// and clears counters before the current row is used for quota admission.
+function applyDueQuotaReset(db, row, now = new Date()) {
+  if (!row) return { row, changed: false };
+  const quota = quotaFromRow(row);
+  const schedule = resolveQuotaResetSchedule(quota, row.quotaNextResetAt, now);
+  const currentNext = typeof row.quotaNextResetAt === "string" && row.quotaNextResetAt
+    ? row.quotaNextResetAt
+    : null;
+
+  if (!schedule.due && schedule.nextResetAt === currentNext) {
+    return { row, changed: false };
+  }
+
+  if (schedule.due) {
+    db.run(
+      `UPDATE apiKeys SET
+        quotaUsedCost = 0,
+        quotaUsedInputTokens = 0,
+        quotaUsedRequests = 0,
+        quotaUsageResetAt = ?,
+        quotaNextResetAt = ?
+       WHERE id = ?`,
+      [schedule.resetAt, schedule.nextResetAt, row.id],
+    );
+  } else {
+    db.run(`UPDATE apiKeys SET quotaNextResetAt = ? WHERE id = ?`, [schedule.nextResetAt, row.id]);
+  }
+
+  return {
+    row: db.get(`SELECT * FROM apiKeys WHERE id = ?`, [row.id]),
+    changed: true,
+  };
+}
+
+// Called by usageRepo inside the same transaction as the usage-history write.
+// If a response finishes after a scheduled boundary, its token/cost usage is
+// charged to the new window rather than resurrecting counters from the old one.
+export function recordApiKeyTokenCost(db, key, inputTokens, cost, now = new Date()) {
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  if (!row) return false;
+  const applied = applyDueQuotaReset(db, row, now);
+  db.run(
+    `UPDATE apiKeys SET
+      quotaUsedInputTokens = COALESCE(quotaUsedInputTokens, 0) + ?,
+      quotaUsedCost = COALESCE(quotaUsedCost, 0) + ?
+     WHERE id = ?`,
+    [Math.max(0, Number(inputTokens) || 0), Math.max(0, Number(cost) || 0), applied.row.id],
+  );
+  return true;
+}
+
 export async function getApiKeys() {
   const db = await getAdapter();
-  const rows = db.all(`SELECT * FROM apiKeys ORDER BY createdAt ASC`);
+  let rows = [];
+  let changed = false;
+  db.transaction(() => {
+    rows = db.all(`SELECT * FROM apiKeys ORDER BY createdAt ASC`).map((row) => {
+      const applied = applyDueQuotaReset(db, row);
+      changed = changed || applied.changed;
+      return applied.row;
+    });
+  });
+  if (changed) notifyApiKeysChanged();
   return rows.map(rowToKey);
 }
 
 export async function getApiKeyById(id) {
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
+  let row = null;
+  let changed = false;
+  db.transaction(() => {
+    const applied = applyDueQuotaReset(db, db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+    row = applied.row;
+    changed = applied.changed;
+  });
+  if (changed) notifyApiKeysChanged();
   return rowToKey(row);
 }
 
@@ -69,7 +153,20 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
     createdAt: new Date().toISOString(),
     access: { restricted: false, allow: [], accountRestricted: false, accountIds: [] },
     quota,
-    usage: { cost: 0, inputTokens: 0, requests: 0, resetAt: null },
+    usage: {
+      cost: 0,
+      inputTokens: 0,
+      requests: 0,
+      resetAt: null,
+      nextResetAt: quota.resetMode === "scheduled"
+        ? getNextQuotaResetAt(
+          quota.resetInterval,
+          new Date(),
+          quota.resetIntervalValue,
+          quota.resetIntervalUnit,
+        )
+        : null,
+    },
   };
   const cols = keyAccessToColumns(KEY_ACCESS_UNRESTRICTED);
   const quotaCols = keyQuotaToColumns(quota);
@@ -78,14 +175,19 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
       id, key, name, machineId, isActive, createdAt,
       accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
       quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
+      quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaNextResetAt,
       quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
     [
       apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
       cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
       quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
+      quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
+      quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
+      apiKey.usage.nextResetAt,
     ]
   );
+  notifyApiKeysChanged();
   return apiKey;
 }
 
@@ -95,31 +197,54 @@ export async function updateApiKey(id, data) {
   db.transaction(() => {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
-    const merged = { ...rowToKey(row), ...data };
+    const current = rowToKey(row);
+    const nextQuota = data.quota ? { ...current.quota, ...data.quota } : current.quota;
+    const merged = { ...current, ...data, quota: nextQuota };
     const cols = keyAccessToColumns(merged.access);
     const quotaCols = keyQuotaToColumns(merged.quota);
+    const scheduleChanged = current.quota.resetMode !== merged.quota.resetMode
+      || current.quota.resetInterval !== merged.quota.resetInterval
+      || current.quota.resetIntervalValue !== merged.quota.resetIntervalValue
+      || current.quota.resetIntervalUnit !== merged.quota.resetIntervalUnit;
+    const nextResetAt = merged.quota.resetMode === "scheduled"
+      ? (scheduleChanged
+        ? getNextQuotaResetAt(
+          merged.quota.resetInterval,
+          new Date(),
+          merged.quota.resetIntervalValue,
+          merged.quota.resetIntervalUnit,
+        )
+        : current.usage.nextResetAt)
+      : null;
     db.run(
       `UPDATE apiKeys SET
         key = ?, name = ?, machineId = ?, isActive = ?,
         accessRestricted = ?, accessAllow = ?, accessAccountRestricted = ?, accessAccountIds = ?,
-        quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?
+        quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
+        quotaResetMode = ?, quotaResetInterval = ?,
+        quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaNextResetAt = ?
        WHERE id = ?`,
       [
         merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0,
         cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
+        quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
+        quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit, nextResetAt,
         id,
       ]
     );
     result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
+  if (result) notifyApiKeysChanged();
   return result;
 }
 
 export async function deleteApiKey(id) {
   const db = await getAdapter();
   const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
-  return (res?.changes ?? 0) > 0;
+  const deleted = (res?.changes ?? 0) > 0;
+  if (deleted) notifyApiKeysChanged();
+  return deleted;
 }
 
 export async function validateApiKey(key) {
@@ -137,8 +262,11 @@ export async function admitApiKeyRequest(key) {
   let result = { tracked: false, allowed: true };
 
   db.transaction(() => {
-    const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+    let row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
     if (!row) return;
+
+    const applied = applyDueQuotaReset(db, row);
+    row = applied.row;
 
     const record = rowToKey(row);
     const exceeded = getExceededKeyQuota(record.quota, record.usage);
@@ -159,6 +287,8 @@ export async function admitApiKeyRequest(key) {
     };
   });
 
+  if (result.tracked && result.allowed) notifyApiKeysChanged();
+
   return result;
 }
 
@@ -175,5 +305,7 @@ export async function resetApiKeyUsage(id) {
     [resetAt, id],
   );
   if ((res?.changes ?? 0) === 0) return null;
-  return rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+  const key = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+  notifyApiKeysChanged();
+  return key;
 }

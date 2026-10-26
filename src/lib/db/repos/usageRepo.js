@@ -2,6 +2,8 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { notifyApiKeysChanged } from "@/lib/apiKeyEvents.js";
+import { recordApiKeyTokenCost } from "./apiKeysRepo.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -253,7 +255,7 @@ export async function saveRequestUsage(entry) {
 
     let inserted = false;
 
-    // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
+    // History, daily aggregates, and per-key/current-window counters share ONE transaction.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
     db.transaction(() => {
       const existing = db.get(
@@ -294,13 +296,7 @@ export async function saveRequestUsage(entry) {
       // Request count is consumed at admission; exact prompt tokens and calculated
       // cost become known here, after the upstream response reports usage.
       if (entry.apiKey && typeof entry.apiKey === "string") {
-        db.run(
-          `UPDATE apiKeys SET
-            quotaUsedInputTokens = COALESCE(quotaUsedInputTokens, 0) + ?,
-            quotaUsedCost = COALESCE(quotaUsedCost, 0) + ?
-           WHERE key = ?`,
-          [Math.max(0, promptTokens), Math.max(0, entry.cost || 0), entry.apiKey],
-        );
+        recordApiKeyTokenCost(db, entry.apiKey, promptTokens, entry.cost || 0);
       }
 
       const dateKey = getLocalDateKey(entry.timestamp);
@@ -322,6 +318,7 @@ export async function saveRequestUsage(entry) {
     if (inserted) {
       pushToRing(entry);
       scheduleStatsEvent("update", 250);
+      if (entry.apiKey && typeof entry.apiKey === "string") notifyApiKeysChanged();
     }
   } catch (e) {
     console.error("Failed to save usage stats:", e);

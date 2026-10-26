@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { resetApiKeyUsage } from "@/lib/localDb";
 
-// POST /api/keys/[id]/reset-usage - Reset all lifetime usage counters for one key.
+// POST /api/keys/[id]/reset-usage - Reset all current-window usage counters for one key.
 export async function POST(_request, { params }) {
   try {
     const { id } = await params;

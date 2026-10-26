@@ -711,19 +711,65 @@ blocks every credentialed provider. Public providers that require no account are
 Both restrictions are independent, so a key can restrict models, accounts, or both.
 
 Each key can also limit total requests, input tokens, estimated cost in USD, or any combination
-of the three. Leave a field blank for unlimited usage. Counters continue until you select
-**Reset usage**; changing a limit does not reset them.
+of the three. Leave a field blank for unlimited usage. Choose **Wait for admin reset** for one
+continuous usage window, or **Automatic schedule** to start a fresh window every 24 hours,
+7 days, calendar month, or a custom number of minutes, hours, or days. A schedule starts when it
+is saved; changing a limit does not reset the current counters. An admin can still use
+**Reset usage** without changing the next scheduled reset.
+
+The Endpoint dashboard keeps saved key policies and usage meters synchronized in real time.
+Request usage appears as soon as a request is admitted; input-token and cost totals follow when
+the provider reports final usage. The SSE channel sends only a change notification and never
+contains API key values or policy details.
 
 The `PUT /api/keys/{id}` access object is backward compatible and accepts
 `{ restricted, allow, accountRestricted, accountIds }`. Account ids are the provider connection
 ids returned by `GET /api/providers`. Unknown or deleted ids remain fail-closed and never broaden
 access.
 
+The same endpoint accepts a quota object:
+
+```json
+{
+  "quota": {
+    "maxCost": 10,
+    "maxInputTokens": 1000000,
+    "maxRequests": 500,
+    "resetMode": "scheduled",
+    "resetInterval": "monthly"
+  }
+}
+```
+
+`resetMode` is `manual` or `scheduled`; a scheduled quota requires `resetInterval` of `daily`,
+`weekly`, `monthly`, or `custom`. A custom interval also requires an integer
+`resetIntervalValue` from 1 to 100,000 and `resetIntervalUnit` of `minutes`, `hours`, or `days`:
+
+```json
+{
+  "quota": {
+    "maxCost": null,
+    "maxInputTokens": 250000,
+    "maxRequests": 100,
+    "resetMode": "scheduled",
+    "resetInterval": "custom",
+    "resetIntervalValue": 90,
+    "resetIntervalUnit": "minutes"
+  }
+}
+```
+
+Existing clients that send only the three limit fields keep the key's current reset policy. API
+responses expose the server-managed next boundary as `usage.nextResetAt` and the most recent reset
+as `usage.resetAt`.
+
 When a limit is exhausted, inference requests using that key receive HTTP `429` before another
 provider call is started. Request caps are reserved atomically and are exact. Input-token and
 cost totals are known only after a provider response is recorded, so an already-running final
-request can put either total slightly over its cap. The rejection includes
-`x-9router-quota-kind`, `x-9router-quota-used`, and `x-9router-quota-limit` response headers.
+request can put either total slightly over its cap. If that usage completes across a scheduled
+boundary, it belongs to the new window. The rejection includes `x-9router-quota-kind`,
+`x-9router-quota-used`, and `x-9router-quota-limit` response headers. Scheduled quota responses
+also include `Retry-After` and `x-9router-quota-reset-at`.
 
 ### 🌐 Deploy Anywhere
 
