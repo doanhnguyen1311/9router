@@ -5,6 +5,7 @@ import {
 import { getSettings, getCustomModels } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
+import { resolveKeyModelRequest } from "@/shared/utils/keyModelRouting.js";
 import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { handleSttCore } from "open-sse/handlers/sttCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -46,7 +47,7 @@ export async function handleStt(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid multipart form data");
   }
 
-  const modelStr = formData.get("model");
+  let modelStr = formData.get("model");
   log.request("POST", `/v1/audio/transcriptions | ${modelStr}`);
 
   const settings = await getSettings();
@@ -60,6 +61,10 @@ export async function handleStt(request) {
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!formData.get("file")) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");
 
+  const keyAccess = await getKeyAccessContext(request);
+  modelStr = resolveKeyModelRequest(keyAccess, modelStr);
+  formData.set("model", modelStr);
+
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -67,7 +72,6 @@ export async function handleStt(request) {
   if (provider === "codex" && model !== "transcribe") return errorResponse(400, "Use model cx/transcribe for Codex STT");
 
   // Per-key access control: checked before any credential lookup.
-  const keyAccess = await getKeyAccessContext(request);
   const keyAccessDenied = await enforceKeyAccessResolved(keyAccess, modelStr, provider, model);
   if (keyAccessDenied) return keyAccessDenied;
   const allowedConnectionIds = getAllowedConnectionIds(keyAccess);

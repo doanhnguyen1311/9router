@@ -2,6 +2,13 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
+import {
+  KEY_MODEL_ROUTING_DISABLED,
+  keyModelRoutingFromColumns,
+  keyModelRoutingToColumns,
+  reconcileKeyModelRouting,
+  validateKeyModelRoutingInput,
+} from "@/shared/utils/keyModelRouting.js";
 import { notifyApiKeysChanged } from "@/lib/apiKeyEvents.js";
 import {
   KEY_QUOTA_UNLIMITED,
@@ -43,6 +50,7 @@ function rowToKey(row) {
       row.accessAccountRestricted,
       row.accessAccountIds,
     ),
+    modelRouting: keyModelRoutingFromColumns(row.modelAlias, row.selectedModel),
     quota,
     isExpired: isKeyQuotaExpired(quota),
     usage: keyQuotaUsageFromColumns(
@@ -174,6 +182,7 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
     isActive: true,
     createdAt: new Date().toISOString(),
     access: { restricted: false, allow: [], accountRestricted: false, accountIds: [] },
+    modelRouting: { ...KEY_MODEL_ROUTING_DISABLED },
     quota: normalizedQuota,
     isExpired: isKeyQuotaExpired(normalizedQuota),
     usage: {
@@ -196,13 +205,15 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
     `INSERT INTO apiKeys(
       id, key, name, machineId, isActive, createdAt,
       accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
+      modelAlias, selectedModel,
       quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
       quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
       quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
     [
       apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
       cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
+      null, null,
       quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
       quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
       quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
@@ -223,7 +234,30 @@ export async function updateApiKey(id, data) {
     const current = rowToKey(row);
     const nextQuota = data.quota ? { ...current.quota, ...data.quota } : current.quota;
     const merged = { ...current, ...data, quota: nextQuota };
+    if (data.modelRouting !== undefined) {
+      const checked = validateKeyModelRoutingInput(data.modelRouting, merged.access);
+      if (!checked.ok) {
+        const error = new Error(checked.error);
+        error.code = "INVALID_KEY_MODEL_ROUTING";
+        throw error;
+      }
+      merged.modelRouting = checked.value;
+    } else {
+      merged.modelRouting = reconcileKeyModelRouting(current.modelRouting, merged.access);
+    }
+    if (merged.modelRouting.alias) {
+      const duplicate = db.get(
+        `SELECT id FROM apiKeys WHERE id <> ? AND modelAlias = ? COLLATE NOCASE LIMIT 1`,
+        [id, merged.modelRouting.alias],
+      );
+      if (duplicate) {
+        const error = new Error("Public model name is already used by another API key");
+        error.code = "KEY_MODEL_ALIAS_CONFLICT";
+        throw error;
+      }
+    }
     const cols = keyAccessToColumns(merged.access);
+    const routingCols = keyModelRoutingToColumns(merged.modelRouting);
     const quotaCols = keyQuotaToColumns(merged.quota);
     const scheduleChanged = current.quota.resetMode !== merged.quota.resetMode
       || current.quota.resetInterval !== merged.quota.resetInterval
@@ -243,6 +277,7 @@ export async function updateApiKey(id, data) {
       `UPDATE apiKeys SET
         key = ?, name = ?, machineId = ?, isActive = ?,
         accessRestricted = ?, accessAllow = ?, accessAccountRestricted = ?, accessAccountIds = ?,
+        modelAlias = ?, selectedModel = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
         quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
@@ -250,6 +285,7 @@ export async function updateApiKey(id, data) {
       [
         merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0,
         cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
+        routingCols.modelAlias, routingCols.selectedModel,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
         quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

@@ -9,7 +9,7 @@ import { getSettings } from "@/lib/localDb";
 import { PROVIDER_MODELS } from "@/shared/constants/models";
 import { GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS } from "open-sse/config/runtimeConfig.js";
 import { initTranslators } from "open-sse/translator/index.js";
-import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessResolved } from "@/sse/services/keyAccess.js";
+import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessResolved, resolveKeyModelRequest } from "@/sse/services/keyAccess.js";
 import { enforceApiKeyQuota } from "@/sse/services/apiKeyQuota.js";
 
 let initialized = false;
@@ -241,15 +241,16 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
   const authError = await validateGeminiNativeClientKey(request);
   if (authError) return authError;
 
-  const modelId = normalizeGeminiNativeModel(model);
+  const keyAccess = await getKeyAccessContext(request);
+  const routedModel = resolveKeyModelRequest(keyAccess, model);
+  const modelId = normalizeGeminiNativeModel(routedModel);
   if (!GEMINI_NATIVE_MODEL_PATTERN.test(modelId)) {
     return Response.json({ error: { message: "Invalid model" } }, { status: 400 });
   }
 
   // Per-key access control: this path calls Gemini directly (not via handleChat),
   // so restricted keys are checked here, before any credential lookup.
-  const keyAccess = await getKeyAccessContext(request);
-  const keyAccessDenied = await enforceKeyAccessResolved(keyAccess, model, "gemini", modelId);
+  const keyAccessDenied = await enforceKeyAccessResolved(keyAccess, routedModel, "gemini", modelId);
   if (keyAccessDenied) return keyAccessDenied;
   const allowedConnectionIds = getAllowedConnectionIds(keyAccess);
   const quotaDenied = await enforceApiKeyQuota(request);

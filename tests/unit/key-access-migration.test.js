@@ -51,7 +51,7 @@ describe("apiKeys access columns: upgrade from the previous schema", () => {
     const { db, adapter } = await boot();
 
     const cols = adapter.all(`PRAGMA table_info(apiKeys)`).map((c) => c.name);
-    expect(cols).toEqual(expect.arrayContaining(["accessRestricted", "accessAllow"]));
+    expect(cols).toEqual(expect.arrayContaining(["accessRestricted", "accessAllow", "modelAlias", "selectedModel"]));
 
     const keys = await db.getApiKeys();
     expect(keys.map((k) => [k.id, k.name, k.isActive, k.access])).toEqual([
@@ -63,7 +63,7 @@ describe("apiKeys access columns: upgrade from the previous schema", () => {
 
     // The schema bump took the pre-change safety backup.
     const backups = fs.readdirSync(path.join(tempDir, "db", "backups"));
-    expect(backups.some((d) => d.startsWith("schema-1-to-7"))).toBe(true);
+    expect(backups.some((d) => d.startsWith("schema-1-to-8"))).toBe(true);
   });
 
   it("persists access through update, new keys default to unrestricted", async () => {

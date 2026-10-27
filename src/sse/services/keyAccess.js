@@ -35,8 +35,8 @@ import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { extractClientApiKey } from "@/shared/utils/requestApiKey.js";
-
 export { extractClientApiKey } from "@/shared/utils/requestApiKey.js";
+export { resolveKeyModelRequest } from "@/shared/utils/keyModelRouting.js";
 
 const lower = (s) => String(s).toLowerCase();
 const canonicalModel = (provider, model) => lower(`${provider}/${model}`);
@@ -59,6 +59,10 @@ export async function getKeyAccessContext(request) {
     allow: record.access.allow || [],
     accountRestricted: record.access.accountRestricted === true,
     accountIds: record.access.accountIds || [],
+    modelRouting: {
+      alias: record.modelRouting?.alias || null,
+      selectedModel: record.modelRouting?.selectedModel || null,
+    },
     _sets: null,
   };
 }
@@ -190,6 +194,37 @@ export async function filterModelsListForKey(ctx, list) {
       continue;
     }
     if (sets.models.has(canonicalModel(info.provider, info.model))) out.push(entry);
+  }
+  const publicModel = ctx.modelRouting?.alias;
+  const selectedModel = ctx.modelRouting?.selectedModel;
+  if (publicModel && selectedModel && !out.some((entry) => lower(entry.id) === lower(publicModel))) {
+    const selectedComboModels = await getComboModels(selectedModel);
+    let targetEntry = null;
+    if (selectedComboModels) {
+      targetEntry = out.find((entry) => (
+        entry.owned_by === KEY_ACCESS_COMBO_OWNER && lower(entry.id) === lower(selectedModel)
+      ));
+    } else {
+      const selectedInfo = await getModelInfo(selectedModel);
+      if (selectedInfo?.provider && selectedInfo.model) {
+        for (const entry of out) {
+          if (entry.owned_by === KEY_ACCESS_COMBO_OWNER) continue;
+          const info = await getModelInfo(entry.id);
+          if (info?.provider && canonicalModel(info.provider, info.model) === canonicalModel(selectedInfo.provider, selectedInfo.model)) {
+            targetEntry = entry;
+            break;
+          }
+        }
+      }
+    }
+    if (targetEntry) {
+      out.unshift({
+        ...targetEntry,
+        id: publicModel,
+        owned_by: "api-key",
+        routed_model: selectedModel,
+      });
+    }
   }
   return out;
 }

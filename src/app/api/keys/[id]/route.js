@@ -1,7 +1,68 @@
 import { NextResponse } from "next/server";
-import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import {
+  deleteApiKey,
+  getApiKeyById,
+  getApiKeys,
+  getCombos,
+  getCustomModels,
+  getModelAliases,
+  getProviderConnections,
+  updateApiKey,
+} from "@/lib/localDb";
 import { validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
+import { validateKeyModelRoutingInput } from "@/shared/utils/keyModelRouting.js";
 import { validateKeyQuotaInput } from "@/shared/utils/keyQuota.js";
+import { AI_MODELS } from "@/shared/constants/models.js";
+import { getProviderAlias } from "@/shared/constants/providers.js";
+
+const lower = (value) => String(value || "").trim().toLowerCase();
+
+async function findPublicModelNameCollision(alias, currentKeyId) {
+  const wanted = lower(alias);
+  if (!wanted) return null;
+  const reserved = new Map();
+  const add = (value, label) => {
+    const normalized = lower(value);
+    if (normalized && !reserved.has(normalized)) reserved.set(normalized, label);
+  };
+
+  for (const model of AI_MODELS) {
+    add(model.model, "an existing model");
+    add(`${model.provider}/${model.model}`, "an existing model");
+  }
+
+  const [keys, combos, aliases, customModels, connections] = await Promise.all([
+    getApiKeys(),
+    getCombos(),
+    getModelAliases(),
+    getCustomModels(),
+    getProviderConnections(),
+  ]);
+  for (const key of keys) {
+    if (key.id !== currentKeyId) add(key.modelRouting?.alias, "another API key's public model name");
+    for (const allowed of key.access?.allow || []) add(allowed, "an allowed model name");
+  }
+  for (const combo of combos) add(combo.name, "an existing combo");
+  for (const [name, target] of Object.entries(aliases || {})) {
+    add(name, "an existing model alias");
+    if (typeof target === "string") add(target, "an existing model or alias");
+  }
+  for (const model of customModels) {
+    add(model?.id, "an existing custom model");
+    if (model?.providerAlias && model?.id) add(`${model.providerAlias}/${model.id}`, "an existing custom model");
+  }
+  for (const connection of connections) {
+    const providerAlias = connection?.providerSpecificData?.prefix
+      || getProviderAlias(connection?.provider)
+      || connection?.provider;
+    for (const model of connection?.providerSpecificData?.enabledModels || []) {
+      add(model, "an enabled provider model");
+      if (providerAlias && !String(model).includes("/")) add(`${providerAlias}/${model}`, "an enabled provider model");
+    }
+  }
+
+  return reserved.get(wanted) || null;
+}
 
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
@@ -23,7 +84,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive, access, quota } = body;
+    const { isActive, access, quota, modelRouting } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -60,12 +121,33 @@ export async function PUT(request, { params }) {
       if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
       updateData.quota = checked.value;
     }
+    if (modelRouting !== undefined) {
+      const effectiveAccess = updateData.access || existing.access;
+      const checked = validateKeyModelRoutingInput(modelRouting, effectiveAccess);
+      if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
+      if (checked.value.alias) {
+        const collision = await findPublicModelNameCollision(checked.value.alias, id);
+        if (collision) {
+          return NextResponse.json(
+            { error: `Public model name conflicts with ${collision}` },
+            { status: 409 },
+          );
+        }
+      }
+      updateData.modelRouting = checked.value;
+    }
 
     const updated = await updateApiKey(id, updateData);
 
     return NextResponse.json({ key: updated });
   } catch (error) {
     console.log("Error updating key:", error);
+    if (error?.code === "KEY_MODEL_ALIAS_CONFLICT") {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error?.code === "INVALID_KEY_MODEL_ROUTING") {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     return NextResponse.json({ error: "Failed to update key" }, { status: 500 });
   }
 }

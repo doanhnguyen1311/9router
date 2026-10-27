@@ -145,8 +145,8 @@ async function calculateCost(provider, model, tokens) {
     // Delegate the actual math to the single source of truth (avoids the two
     // copies drifting apart — see open-sse/providers/pricing.js for the
     // cache-inclusive prompt_tokens convention this assumes).
-    const { calculateCostFromTokens } = await import("open-sse/providers/pricing.js");
-    return calculateCostFromTokens(tokens, pricing);
+    const { calculateProviderCostFromTokens } = await import("open-sse/providers/pricing.js");
+    return calculateProviderCostFromTokens(provider, model, tokens, pricing);
   } catch (e) {
     console.error("Error calculating cost:", e);
     return 0;
@@ -408,7 +408,7 @@ export async function getApiKeyUsageSummary(apiKey) {
     [apiKey, windowStartedAt],
   );
   if (legacyZeroCostRows.length > 0) {
-    const [{ getPricingForModel }, { calculateCostFromTokens }] = await Promise.all([
+    const [{ getPricingForModel }, { calculateProviderCostFromTokens }] = await Promise.all([
       import("./pricingRepo.js"),
       import("open-sse/providers/pricing.js"),
     ]);
@@ -423,7 +423,7 @@ export async function getApiKeyUsageSummary(apiKey) {
       const pricing = pricingCache.get(key);
       if (!pricing) continue;
       const storedTokens = parseJson(row.tokens, {}) || {};
-      aggregate.cost += calculateCostFromTokens({
+      aggregate.cost += calculateProviderCostFromTokens(row.provider, row.model, {
         ...storedTokens,
         prompt_tokens: storedTokens.prompt_tokens ?? storedTokens.input_tokens ?? row.promptTokens ?? 0,
         completion_tokens: storedTokens.completion_tokens ?? storedTokens.output_tokens ?? row.completionTokens ?? 0,
@@ -464,6 +464,12 @@ export async function getApiKeyUsageSummary(apiKey) {
       totalTokens: keyRecord.usage.inputTokens + outputTokens,
       cost,
       modelCount: models.length,
+    },
+    modelAccess: {
+      restricted: keyRecord.access.restricted === true,
+      allowedModels: keyRecord.access.restricted ? [...keyRecord.access.allow] : [],
+      publicModel: keyRecord.modelRouting?.alias || null,
+      selectedModel: keyRecord.modelRouting?.selectedModel || null,
     },
     models,
   };

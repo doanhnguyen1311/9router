@@ -7,7 +7,7 @@ import {
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
-import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
+import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessResolved, resolveKeyModelRequest } from "../services/keyAccess.js";
 import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { handleSystemoneCore } from "open-sse/handlers/systemoneCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -32,7 +32,7 @@ export async function handleSystemone(request) {
   }
 
   const url = new URL(request.url);
-  const modelStr = body.model;
+  let modelStr = body.model;
 
   log.request("POST", `${url.pathname} | ${modelStr}`);
 
@@ -69,6 +69,10 @@ export async function handleSystemone(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: questions");
   }
 
+  const keyAccess = await getKeyAccessContext(request);
+  modelStr = resolveKeyModelRequest(keyAccess, modelStr);
+  body.model = modelStr;
+
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) {
     log.warn("SYSTEMONE", "Invalid model format", { model: modelStr });
@@ -78,7 +82,6 @@ export async function handleSystemone(request) {
   const { provider, model } = modelInfo;
 
   // Per-key access control: checked before any credential lookup.
-  const keyAccess = await getKeyAccessContext(request);
   const keyAccessDenied = await enforceKeyAccessResolved(keyAccess, modelStr, provider, model);
   if (keyAccessDenied) return keyAccessDenied;
   const allowedConnectionIds = getAllowedConnectionIds(keyAccess);

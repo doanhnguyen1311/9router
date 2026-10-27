@@ -13,7 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
-import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
+import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccessProvider, resolveKeyModelRequest } from "../services/keyAccess.js";
 import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
 
@@ -34,7 +34,7 @@ export async function handleFetch(request) {
 
   const reqUrl = new URL(request.url);
   // Accept either `provider` or `model` (UI sends `model` since provider IS the model for webFetch)
-  const providerInput = body.provider || body.model;
+  let providerInput = body.provider || body.model;
   const targetUrl = body.url;
   const format = body.format;
   const maxCharacters = body.max_characters;
@@ -90,13 +90,17 @@ export async function handleFetch(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, err.message);
   }
 
+  const keyAccess = await getKeyAccessContext(request);
+  providerInput = resolveKeyModelRequest(keyAccess, providerInput);
+  if (body.provider) body.provider = providerInput;
+  else body.model = providerInput;
+
   // Combo expansion: providerInput may be a combo name → run fallback/round-robin across providers
   const combos = await getCombos();
   const comboModels = getComboModelsFromData(providerInput, combos);
 
   // Per-key access control: the provider IS the model here, so a
   // restricted key needs the provider id (or the combo) on its list.
-  const keyAccess = await getKeyAccessContext(request);
   const keyAccessDenied = await enforceKeyAccessProvider(keyAccess, providerInput, comboModels);
   if (keyAccessDenied) return keyAccessDenied;
   const allowedConnectionIds = getAllowedConnectionIds(keyAccess);

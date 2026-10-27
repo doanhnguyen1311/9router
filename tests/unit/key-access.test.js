@@ -26,8 +26,8 @@ const engine = await import("../../src/sse/services/keyAccess.js");
 const helpers = await import("../../src/shared/utils/keyAccess.js");
 const { keyAccessDeniedMessage, KEY_ACCESS_MAX_ENTRIES } = await import("../../src/shared/constants/keyAccess.js");
 
-function key(id, access) {
-  fx.keys[`sk-${id}`] = { id, name: `key-${id}`, isActive: true, access };
+function key(id, access, modelRouting) {
+  fx.keys[`sk-${id}`] = { id, name: `key-${id}`, isActive: true, access, modelRouting };
 }
 const req = (k, { header = "Authorization", query = false } = {}) => {
   const headers = {};
@@ -50,6 +50,11 @@ beforeEach(() => {
   key("cx", { restricted: true, allow: ["cx/gpt-5"] });
   key("node", { restricted: true, allow: ["mock/glm-4"] });
   key("tavily", { restricted: true, allow: ["tavily", "Main"] });
+  key(
+    "alias",
+    { restricted: true, allow: ["openai/model-a", "openai/model-b"] },
+    { alias: "coding-model", selectedModel: "openai/model-b" },
+  );
 });
 
 describe("unrestricted passthrough", () => {
@@ -79,6 +84,26 @@ describe("restricted: allow by exact model", () => {
   });
   it("denies a combo whose members include the allowed model", async () => {
     expect(await status("sk-b", "Main")).toBe(403);
+  });
+});
+
+describe("per-key public model name", () => {
+  it("resolves the fixed name case-insensitively while direct model names remain unchanged", async () => {
+    const ctx = await ctxFor("sk-alias");
+    expect(engine.resolveKeyModelRequest(ctx, "CODING-MODEL")).toBe("openai/model-b");
+    expect(engine.resolveKeyModelRequest(ctx, "openai/model-a")).toBe("openai/model-a");
+    expect(await engine.enforceKeyAccess(ctx, engine.resolveKeyModelRequest(ctx, "coding-model"))).toBeNull();
+    expect(await engine.enforceKeyAccess(ctx, engine.resolveKeyModelRequest(ctx, "openai/model-a"))).toBeNull();
+  });
+
+  it("publishes the fixed name alongside allowed real model names", async () => {
+    const list = [
+      { id: "openai/model-a", object: "model", owned_by: "openai" },
+      { id: "openai/model-b", object: "model", owned_by: "openai" },
+    ];
+    const filtered = await engine.filterModelsListForKey(await ctxFor("sk-alias"), list);
+    expect(filtered.map((entry) => entry.id)).toEqual(["coding-model", "openai/model-a", "openai/model-b"]);
+    expect(filtered[0]).toMatchObject({ owned_by: "api-key", routed_model: "openai/model-b" });
   });
 });
 

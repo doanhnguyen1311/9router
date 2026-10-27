@@ -4,7 +4,7 @@ import {
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
-import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
+import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccess, resolveKeyModelRequest } from "../services/keyAccess.js";
 import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { handleTtsCore } from "open-sse/handlers/ttsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -29,7 +29,7 @@ export async function handleTts(request) {
   }
 
   const url = new URL(request.url);
-  const modelStr = body.model;
+  let modelStr = body.model;
   const responseFormat = url.searchParams.get("response_format") || body.response_format || "mp3"; // mp3 (default) | json
   const language = body.language || ""; // Optional language hint (currently used by Gemini)
   const style = body.style || ""; // Optional style/voice instructions (e.g. Xiaomi MiMo)
@@ -48,6 +48,8 @@ export async function handleTts(request) {
 
   // Per-key access control: requested target, before combo expansion.
   const keyAccess = await getKeyAccessContext(request);
+  modelStr = resolveKeyModelRequest(keyAccess, modelStr);
+  body.model = modelStr;
   const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
   if (keyAccessDenied) return keyAccessDenied;
   const allowedConnectionIds = getAllowedConnectionIds(keyAccess);

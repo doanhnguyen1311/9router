@@ -83,9 +83,20 @@ function normalizeResponsesUsage(raw) {
     completion_tokens: output,
     total_tokens: Number.isSafeInteger(raw.total_tokens) ? raw.total_tokens : input + output,
   };
-  const cached = raw.input_tokens_details?.cached_tokens ?? raw.prompt_tokens_details?.cached_tokens;
+  const inputDetails = raw.input_tokens_details ?? raw.prompt_tokens_details;
+  const cacheWriteDetails = inputDetails?.cache_write_tokens_details;
+  const cached = inputDetails?.cached_tokens;
   const reasoning = raw.output_tokens_details?.reasoning_tokens ?? raw.completion_tokens_details?.reasoning_tokens;
   if (Number.isSafeInteger(cached) && cached >= 0) usage.cached_tokens = cached;
+  if (Number.isSafeInteger(inputDetails?.cache_write_tokens) && inputDetails.cache_write_tokens >= 0) {
+    usage.cache_write_tokens = inputDetails.cache_write_tokens;
+  }
+  if (Number.isSafeInteger(cacheWriteDetails?.ttl_30m_tokens) && cacheWriteDetails.ttl_30m_tokens >= 0) {
+    usage.cache_write_30m_tokens = cacheWriteDetails.ttl_30m_tokens;
+  }
+  if (Number.isSafeInteger(cacheWriteDetails?.ttl_12h_tokens) && cacheWriteDetails.ttl_12h_tokens >= 0) {
+    usage.cache_write_12h_tokens = cacheWriteDetails.ttl_12h_tokens;
+  }
   if (Number.isSafeInteger(reasoning) && reasoning >= 0) usage.reasoning_tokens = reasoning;
   return usage;
 }

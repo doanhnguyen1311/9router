@@ -31,12 +31,17 @@ export function extractUsageFromResponse(responseBody) {
   // canonicalizeUsage() passes through without folding. Reading it here keeps
   // cache accounting correct for /v1/responses and codex traffic.
   if (responseBody.usage?.input_tokens !== undefined) {
+    const inputDetails = responseBody.usage.input_tokens_details;
+    const cacheWriteDetails = inputDetails?.cache_write_tokens_details;
     return {
       prompt_tokens: responseBody.usage.input_tokens || 0,
       completion_tokens: responseBody.usage.output_tokens || 0,
-      cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.input_tokens_details?.cached_tokens,
+      cached_tokens: responseBody.usage.cached_tokens ?? inputDetails?.cached_tokens,
       cache_read_input_tokens: responseBody.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens
+      cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens,
+      cache_write_tokens: inputDetails?.cache_write_tokens,
+      cache_write_30m_tokens: cacheWriteDetails?.ttl_30m_tokens,
+      cache_write_12h_tokens: cacheWriteDetails?.ttl_12h_tokens,
     };
   }
 

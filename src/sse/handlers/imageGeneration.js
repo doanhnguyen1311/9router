@@ -12,6 +12,7 @@ import {
   enforceKeyAccountAccess,
   getAllowedConnectionIds,
   getKeyAccessContext,
+  resolveKeyModelRequest,
 } from "../services/keyAccess.js";
 import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
@@ -62,7 +63,7 @@ export async function handleImageGeneration(request) {
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const wantsStream = (request.headers.get("accept") || "").includes("text/event-stream");
   const binaryOutput = url.searchParams.get("response_format") === "binary";
-  const modelStr = body.model;
+  let modelStr = body.model;
 
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
@@ -77,6 +78,8 @@ export async function handleImageGeneration(request) {
 
   // Per-key access control: requested target, before combo expansion.
   const keyAccess = await getKeyAccessContext(request);
+  modelStr = resolveKeyModelRequest(keyAccess, modelStr);
+  body.model = modelStr;
   const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
   if (keyAccessDenied) return keyAccessDenied;
   const keyAccountDenied = enforceKeyAccountAccess(keyAccess, preferredConnectionId);

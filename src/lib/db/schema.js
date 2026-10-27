@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -89,6 +89,10 @@ export const TABLES = {
       accessAllow: "TEXT",
       accessAccountRestricted: "INTEGER DEFAULT 0",
       accessAccountIds: "TEXT",
+      // Optional public model name for this key. Calls to it route to the
+      // key owner's currently selected member of accessAllow.
+      modelAlias: "TEXT COLLATE NOCASE",
+      selectedModel: "TEXT",
       // Optional per-window quotas and their resettable counters. NULL limit = unlimited.
       quotaMaxCost: "REAL",
       quotaMaxInputTokens: "INTEGER",
@@ -104,7 +108,10 @@ export const TABLES = {
       quotaUsedRequests: "INTEGER DEFAULT 0",
       quotaUsageResetAt: "TEXT",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_ak_model_alias_unique ON apiKeys(modelAlias COLLATE NOCASE) WHERE modelAlias IS NOT NULL AND modelAlias <> ''",
+    ],
   },
   combos: {
     columns: {

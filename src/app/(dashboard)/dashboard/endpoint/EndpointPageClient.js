@@ -757,12 +757,34 @@ export default function APIPageClient({ machineId }) {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.key) {
-        setKeys(prev => prev.map(k => k.id === id ? { ...k, access: data.key.access } : k));
+        setKeys(prev => prev.map(k => k.id === id ? data.key : k));
+        return { ok: true };
       } else {
         console.log("Error updating key access:", data.error || res.status);
+        return { ok: false, error: data.error || `Request failed (${res.status})` };
       }
     } catch (error) {
       console.log("Error updating key access:", error);
+      return { ok: false, error: error.message };
+    }
+  };
+
+  const handleUpdateKeyModelRouting = async (id, modelRouting) => {
+    try {
+      const res = await fetch(`/api/keys/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelRouting }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.key) {
+        setKeys(prev => prev.map(k => k.id === id ? data.key : k));
+        return { ok: true };
+      }
+      return { ok: false, error: data.error || `Request failed (${res.status})` };
+    } catch (error) {
+      console.log("Error updating key model routing:", error);
+      return { ok: false, error: error.message };
     }
   };
 
@@ -1171,6 +1193,7 @@ export default function APIPageClient({ machineId }) {
                   <KeyAccessControls
                     apiKey={key}
                     onChange={(access) => handleUpdateKeyAccess(key.id, access)}
+                    onModelRoutingChange={(modelRouting) => handleUpdateKeyModelRouting(key.id, modelRouting)}
                     onRequestRestrict={() => setConfirmState({
                       title: "Restrict API Key",
                       message: `Restrict API key "${key.name}"?\n\nIt will only be able to call the combos and models you add. Until you add one, it can call nothing.`,

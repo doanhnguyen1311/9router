@@ -43,6 +43,28 @@ export function normalizePricingModelId(model) {
 }
 
 /**
+ * Resolve Codex-only virtual selectors to the OpenAI API model whose public
+ * price is used for the dashboard estimate. This is intentionally scoped to
+ * provider="codex" so compatible/OpenAI providers keep their existing model
+ * matching behavior.
+ */
+export function normalizeCodexPricingModelId(model) {
+  let normalized = normalizePricingModelId(model);
+  if (typeof normalized !== "string") return normalized;
+
+  normalized = normalized.replace(/\[1m\]$/i, "");
+  normalized = normalized.replace(/^(gpt-5\.6-(?:sol|terra|luna))-review$/i, "$1");
+
+  // OpenAI's pricing page documents this rolling alias as GPT-5.6 Sol today.
+  if (normalized.toLowerCase() === "gpt-daybreak-blue-latest") return "gpt-5.6-sol";
+  return normalized;
+}
+
+export function isCodexPricingProvider(provider) {
+  return provider === "codex" || provider === "cx";
+}
+
+/**
  * Canonical model pricing — provider-agnostic.
  * Cover all known models; deduplicated across providers.
  */
@@ -211,6 +233,19 @@ export const MODEL_PRICING = {
  * Keyed by provider alias (cc, cx, gc, gh, ...) or provider id (openai, anthropic, ...).
  */
 export const PROVIDER_PRICING = {
+  // OpenAI Codex OAuth — API-equivalent Standard estimates from the official
+  // OpenAI API pricing pages. These are provider-scoped so other providers and
+  // user-defined compatible nodes retain their existing prices.
+  codex: {
+    "gpt-6-astra":    { input: 10.00, output: 50.00, cached: 1.00, cache_creation: 12.50 },
+    "gpt-6.1-sol":    { input: 2.00,  output: 10.00, cached: 0.10, cache_creation: 2.50  },
+    "gpt-6-sol":      { input: 2.00,  output: 10.00, cached: 0.20, cache_creation: 2.50  },
+    "gpt-6-luna":     { input: 0.10,  output: 0.50,  cached: 0.01, cache_creation: 0.125 },
+    // Promotional price published through at least 2026-11-21.
+    "gpt-5.6-sol":    { input: 4.00,  output: 20.00, cached: 0.40, cache_creation: 5.00  },
+    "gpt-5.6-terra":  { input: 2.00,  output: 12.00, cached: 0.20, cache_creation: 2.50  },
+    "gpt-5.6-luna":   { input: 0.20,  output: 1.20,  cached: 0.02, cache_creation: 0.25  },
+  },
   // GitHub Copilot (gh) — explicit override, matches canonical gpt-5.3-codex rate
   gh: {
     "gpt-5.3-codex": { input: 1.75, output: 14.00, cached: 0.175, reasoning: 14.00, cache_creation: 1.75 },
@@ -436,10 +471,11 @@ export function matchPattern(pattern, model) {
  */
 export function getPricingForModel(provider, model) {
   if (!model) return null;
+  const providerPricingKey = isCodexPricingProvider(provider) ? "codex" : provider;
 
   // 1. Exact provider-specific override (allows an explicitly priced virtual id).
-  if (provider && PROVIDER_PRICING[provider]?.[model]) {
-    return PROVIDER_PRICING[provider][model];
+  if (providerPricingKey && PROVIDER_PRICING[providerPricingKey]?.[model]) {
+    return PROVIDER_PRICING[providerPricingKey][model];
   }
 
   // 2. Free namespaces bill $0 regardless of the model name behind them.
@@ -447,10 +483,12 @@ export function getPricingForModel(provider, model) {
 
   // Runtime routing keeps a thinking selector on the model used for usage logs
   // (`model(high)`, `model(8192)`, ...). Pricing belongs to the underlying model.
-  const pricingModel = normalizePricingModelId(model);
+  const pricingModel = isCodexPricingProvider(provider)
+    ? normalizeCodexPricingModelId(model)
+    : normalizePricingModelId(model);
 
-  if (provider && PROVIDER_PRICING[provider]?.[pricingModel]) {
-    return PROVIDER_PRICING[provider][pricingModel];
+  if (providerPricingKey && PROVIDER_PRICING[providerPricingKey]?.[pricingModel]) {
+    return PROVIDER_PRICING[providerPricingKey][pricingModel];
   }
   if (isFreeModel(pricingModel)) return ZERO_PRICING;
 
@@ -524,4 +562,61 @@ export function calculateCostFromTokens(tokens, pricing) {
   }
 
   return cost;
+}
+
+const CODEX_LONG_CONTEXT_THRESHOLD = 272000;
+
+/** OpenAI models whose full request switches to long-context token rates. */
+function usesCodexLongContextPricing(model) {
+  const normalized = normalizeCodexPricingModelId(model)?.toLowerCase?.() || "";
+  return normalized.startsWith("gpt-5.6-") || normalized.startsWith("gpt-6-") || normalized.startsWith("gpt-6.1-");
+}
+
+/**
+ * Calculate an API-equivalent Standard price for the Codex provider.
+ *
+ * OpenAI Responses usage is inclusive:
+ * - cached/cache-write tokens are subsets of input_tokens
+ * - reasoning tokens are a subset of output_tokens and are billed as output
+ *
+ * GPT-5.6/GPT-6 requests above 272K input tokens use 2x input/cache/write
+ * rates and 1.5x output rates for the whole request.
+ */
+export function calculateCodexCostFromTokens(model, tokens, pricing) {
+  if (!tokens || !pricing) return 0;
+
+  const inputTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
+  const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
+  const write30mTokens = tokens.cache_write_30m_tokens || 0;
+  const write12hTokens = tokens.cache_write_12h_tokens || 0;
+  const classifiedWriteTokens = write30mTokens + write12hTokens;
+  const reportedWriteTokens = tokens.cache_write_tokens || tokens.cache_creation_input_tokens || 0;
+  const cacheWriteTokens = Math.max(reportedWriteTokens, classifiedWriteTokens);
+  const unclassifiedWriteTokens = Math.max(0, cacheWriteTokens - classifiedWriteTokens);
+  const nonCachedInput = Math.max(0, inputTokens - cachedTokens - cacheWriteTokens);
+  const outputTokens = tokens.completion_tokens || tokens.output_tokens || 0;
+
+  const isLongContext = inputTokens > CODEX_LONG_CONTEXT_THRESHOLD && usesCodexLongContextPricing(model);
+  const inputMultiplier = isLongContext ? 2 : 1;
+  const outputMultiplier = isLongContext ? 1.5 : 1;
+
+  let cost = nonCachedInput * pricing.input * inputMultiplier;
+  cost += cachedTokens * (pricing.cached ?? pricing.input) * inputMultiplier;
+
+  // OpenAI's 30m cache-write price is 1.25x input; 12h is 2.5x input.
+  // cache_creation stores the explicit 30m price when the model declares one.
+  const write30mRate = pricing.cache_creation ?? (pricing.input * 1.25);
+  const write12hRate = pricing.input * 2.5;
+  cost += (write30mTokens + unclassifiedWriteTokens) * write30mRate * inputMultiplier;
+  cost += write12hTokens * write12hRate * inputMultiplier;
+
+  // output_tokens already includes reasoning_tokens for OpenAI Responses.
+  cost += outputTokens * pricing.output * outputMultiplier;
+  return cost / 1000000;
+}
+
+/** Keep provider-specific accounting isolated from the generic cost formula. */
+export function calculateProviderCostFromTokens(provider, model, tokens, pricing) {
+  if (isCodexPricingProvider(provider)) return calculateCodexCostFromTokens(model, tokens, pricing);
+  return calculateCostFromTokens(tokens, pricing);
 }

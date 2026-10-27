@@ -91,6 +91,7 @@ export function filterUsageForFormat(usage, targetFormat) {
     default: [
       'prompt_tokens', 'completion_tokens', 'total_tokens',
       'cached_tokens', 'reasoning_tokens',
+      'cache_write_tokens', 'cache_write_30m_tokens', 'cache_write_12h_tokens',
       'prompt_tokens_details', 'completion_tokens_details',
       'estimated'
     ]
@@ -129,6 +130,9 @@ export function normalizeUsage(usage) {
   assignNumber("total_tokens", usage?.total_tokens);
   assignNumber("cache_read_input_tokens", usage?.cache_read_input_tokens);
   assignNumber("cache_creation_input_tokens", usage?.cache_creation_input_tokens);
+  assignNumber("cache_write_tokens", usage?.cache_write_tokens);
+  assignNumber("cache_write_30m_tokens", usage?.cache_write_30m_tokens);
+  assignNumber("cache_write_12h_tokens", usage?.cache_write_12h_tokens);
   assignNumber("cached_tokens", usage?.cached_tokens);
   assignNumber("reasoning_tokens", usage?.reasoning_tokens);
 
@@ -150,6 +154,7 @@ export function normalizeUsage(usage) {
  *   prompt_tokens               = total input INCLUDING cache read + cache creation
  *   cached_tokens               = cache-read portion (subset of prompt_tokens)
  *   cache_creation_input_tokens = cache-write portion (subset of prompt_tokens)
+ *   cache_write_*               = OpenAI cache-write portions (subsets of prompt_tokens)
  *   completion_tokens, reasoning_tokens, total_tokens
  *
  * Discriminator: Claude reports cache_read_input_tokens with a prompt that
@@ -172,6 +177,11 @@ export function canonicalizeUsage(usage) {
   // absent, so callers that pass a buildUsage() object through don't silently
   // drop cache_creation.
   const cacheCreation = num(usage.cache_creation_input_tokens ?? usage.prompt_tokens_details?.cache_creation_tokens);
+  const inputDetails = usage.input_tokens_details ?? usage.prompt_tokens_details;
+  const cacheWriteDetails = inputDetails?.cache_write_tokens_details;
+  const cacheWrite = num(usage.cache_write_tokens ?? inputDetails?.cache_write_tokens);
+  const cacheWrite30m = num(usage.cache_write_30m_tokens ?? cacheWriteDetails?.ttl_30m_tokens);
+  const cacheWrite12h = num(usage.cache_write_12h_tokens ?? cacheWriteDetails?.ttl_12h_tokens);
 
   let prompt = num(usage.prompt_tokens ?? usage.input_tokens);
   let cached;
@@ -205,6 +215,9 @@ export function canonicalizeUsage(usage) {
     cached_tokens: cached,
     cache_creation_input_tokens: cacheCreation,
   };
+  if (cacheWrite > 0) result.cache_write_tokens = cacheWrite;
+  if (cacheWrite30m > 0) result.cache_write_30m_tokens = cacheWrite30m;
+  if (cacheWrite12h > 0) result.cache_write_12h_tokens = cacheWrite12h;
   if (reasoning > 0) result.reasoning_tokens = reasoning;
   return result;
 }
@@ -265,13 +278,18 @@ export function extractUsage(chunk) {
   // OpenAI Responses API format (response.completed or response.done)
   if ((chunk.type === "response.completed" || chunk.type === "response.done") && chunk.response?.usage && typeof chunk.response.usage === "object") {
     const usage = chunk.response.usage;
-    const cachedTokens = usage.input_tokens_details?.cached_tokens;
+    const inputDetails = usage.input_tokens_details;
+    const cachedTokens = inputDetails?.cached_tokens;
+    const cacheWriteDetails = inputDetails?.cache_write_tokens_details;
     return normalizeUsage({
       prompt_tokens: usage.input_tokens || usage.prompt_tokens || 0,
       completion_tokens: usage.output_tokens || usage.completion_tokens || 0,
       cached_tokens: cachedTokens,
+      cache_write_tokens: inputDetails?.cache_write_tokens,
+      cache_write_30m_tokens: cacheWriteDetails?.ttl_30m_tokens,
+      cache_write_12h_tokens: cacheWriteDetails?.ttl_12h_tokens,
       reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
-      prompt_tokens_details: cachedTokens ? { cached_tokens: cachedTokens } : undefined
+      prompt_tokens_details: inputDetails
     });
   }
 

@@ -4,6 +4,12 @@ import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 import { keyAccessFromColumns, keyAccessToColumns, validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
 import {
+  KEY_MODEL_ROUTING_DISABLED,
+  keyModelRoutingFromColumns,
+  keyModelRoutingToColumns,
+  validateKeyModelRoutingInput,
+} from "@/shared/utils/keyModelRouting.js";
+import {
   KEY_QUOTA_UNLIMITED,
   getNextQuotaResetAt,
   keyQuotaFromColumns,
@@ -102,6 +108,7 @@ export async function exportDb() {
         r.accessAccountRestricted,
         r.accessAccountIds,
       ),
+      modelRouting: keyModelRoutingFromColumns(r.modelAlias, r.selectedModel),
       quota: keyQuotaFromColumns(
         r.quotaMaxCost,
         r.quotaMaxInputTokens,
@@ -177,6 +184,7 @@ export async function importDb(payload) {
         [id, isActive === false ? 0 : 1, testStatus || "unknown", stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
       );
     }
+    const importedModelAliases = new Set();
     for (const k of payload.apiKeys || []) {
       // Per-key access: a backup without `access` (older version) restores
       // unrestricted, exactly as before; a malformed `access` is refused.
@@ -187,6 +195,20 @@ export async function importDb(payload) {
         access = checked.value;
       }
       const cols = keyAccessToColumns(access);
+      let modelRouting = KEY_MODEL_ROUTING_DISABLED;
+      if (k.modelRouting !== undefined) {
+        const checked = validateKeyModelRoutingInput(k.modelRouting, access);
+        if (!checked.ok) throw new Error(`apiKeys ${k.id}: ${checked.error}`);
+        modelRouting = checked.value;
+      }
+      if (modelRouting.alias) {
+        const normalizedAlias = modelRouting.alias.toLowerCase();
+        if (importedModelAliases.has(normalizedAlias)) {
+          throw new Error(`apiKeys ${k.id}: duplicate public model name`);
+        }
+        importedModelAliases.add(normalizedAlias);
+      }
+      const routingCols = keyModelRoutingToColumns(modelRouting);
       let quota = KEY_QUOTA_UNLIMITED;
       if (k.quota !== undefined) {
         const checked = validateKeyQuotaInput(k.quota);
@@ -214,14 +236,16 @@ export async function importDb(payload) {
         `INSERT OR REPLACE INTO apiKeys(
           id, key, name, machineId, isActive, createdAt,
           accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
+          modelAlias, selectedModel,
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
           quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
           k.createdAt || new Date().toISOString(),
           cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
+          routingCols.modelAlias, routingCols.selectedModel,
           quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
           quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
           quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

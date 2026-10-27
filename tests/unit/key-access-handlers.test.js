@@ -26,7 +26,10 @@ vi.mock("@/lib/localDb", () => ({
 }));
 vi.mock("@/lib/disabledModelsDb", () => ({ getDisabledModels: async () => ({}) }));
 vi.mock("@/lib/db/repos/combosRepo.js", () => ({ getCombos: async () => fx.combos }));
-vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyByKey: async (k) => fx.keys[k] || null }));
+vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({
+  getApiKeyByKey: async (k) => fx.keys[k] || null,
+  admitApiKeyRequest: async () => ({ tracked: true, allowed: true }),
+}));
 vi.mock("@/lib/usageDb.js", () => ({ saveRequestUsage: vi.fn() }));
 vi.mock("@/sse/services/auth.js", () => ({
   getProviderCredentials: mocks.getProviderCredentials,
@@ -79,6 +82,11 @@ beforeEach(() => {
     "sk-combo": { id: "c", name: "combo", isActive: true, access: { restricted: true, allow: ["Main"] } },
     "sk-b": { id: "b", name: "b", isActive: true, access: { restricted: true, allow: ["openai/model-b"] } },
     "sk-empty": { id: "e", name: "empty", isActive: true, access: { restricted: true, allow: [] } },
+    "sk-alias": {
+      id: "a", name: "alias", isActive: true,
+      access: { restricted: true, allow: ["openai/model-a", "openai/model-b"] },
+      modelRouting: { alias: "coding-model", selectedModel: "openai/model-b" },
+    },
     "sk-media": {
       id: "m", name: "media", isActive: true,
       access: {
@@ -140,6 +148,12 @@ describe("chat (/v1/chat/completions, /v1/messages, /v1/responses all use handle
     expect(text).toContain("from-model-b");
     const tried = mocks.handleChatCore.mock.calls.map(([a]) => a.modelInfo.model);
     expect(tried).toEqual(["model-a", "model-b"]);
+  });
+  it("routes the fixed public name to the selected model but keeps direct allowed names direct", async () => {
+    expect((await chat("coding-model", "sk-alias")).status).toBe(200);
+    expect(mocks.handleChatCore.mock.calls.at(-1)[0].modelInfo.model).toBe("model-b");
+    expect((await chat("openai/model-a", "sk-alias")).status).toBe(500);
+    expect(mocks.handleChatCore.mock.calls.at(-1)[0].modelInfo.model).toBe("model-a");
   });
   it("bypass check: a restricted key sent as x-goog-api-key on the Gemini-compatible route is still restricted", async () => {
     const res = await geminiRoute.POST(

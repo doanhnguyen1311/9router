@@ -3,11 +3,11 @@
 // Per-API-key access control on the Endpoint page.
 // Model and provider-account restrictions are independent. Model entries use
 // the shared picker; account ids come from the safe /api/providers response.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import { Toggle, ModelSelectModal } from "@/shared/components";
 
-export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict }) {
+export default function KeyAccessControls({ apiKey, onChange, onModelRoutingChange, onRequestRestrict }) {
   const access = apiKey.access || {
     restricted: false,
     allow: [],
@@ -21,7 +21,14 @@ export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict 
   const [modelAliases, setModelAliases] = useState({});
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [accountsError, setAccountsError] = useState("");
+  const [aliasDraft, setAliasDraft] = useState(apiKey.modelRouting?.alias || "");
+  const [aliasSaving, setAliasSaving] = useState(false);
+  const [aliasError, setAliasError] = useState("");
   const accountIds = access.accountIds || [];
+
+  useEffect(() => {
+    setAliasDraft(apiKey.modelRouting?.alias || "");
+  }, [apiKey.modelRouting?.alias]);
 
   const accessValue = (patch = {}) => ({
     restricted: access.restricted === true,
@@ -86,6 +93,17 @@ export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict 
     return groups;
   }, {});
 
+  const saveModelRouting = async () => {
+    setAliasSaving(true);
+    setAliasError("");
+    const result = await onModelRoutingChange({
+      alias: aliasDraft.trim() || null,
+      selectedModel: apiKey.modelRouting?.selectedModel || null,
+    });
+    setAliasSaving(false);
+    if (!result?.ok) setAliasError(result?.error || "Failed to save public model name");
+  };
+
   return (
     <div className="mt-2" data-testid="key-access">
       <Toggle
@@ -123,6 +141,46 @@ export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict 
             <span className="material-symbols-outlined leading-none" style={{ fontSize: "14px" }}>add</span>
             Add combo or model
           </button>
+        </div>
+      )}
+      {access.restricted && access.allow.length > 0 && (
+        <div className="mt-2 rounded-lg border border-border bg-surface-2/40 p-2.5">
+          <label htmlFor={`key-model-alias-${apiKey.id}`} className="text-xs font-medium text-text-main">
+            Public model name
+          </label>
+          <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
+            <input
+              id={`key-model-alias-${apiKey.id}`}
+              value={aliasDraft}
+              onChange={(event) => {
+                setAliasDraft(event.target.value);
+                setAliasError("");
+              }}
+              placeholder="e.g. coding-model"
+              autoCapitalize="none"
+              spellCheck={false}
+              className="h-8 min-w-0 flex-1 rounded-lg border border-border bg-surface-1 px-2.5 font-mono text-xs text-text-main outline-none focus:border-primary/60"
+            />
+            <button
+              type="button"
+              onClick={saveModelRouting}
+              disabled={aliasSaving || aliasDraft.trim() === (apiKey.modelRouting?.alias || "")}
+              className="h-8 rounded-lg bg-primary px-3 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {aliasSaving ? "Saving..." : "Save name"}
+            </button>
+          </div>
+          {aliasError && <p className="mt-1.5 text-[11px] text-red-500">{aliasError}</p>}
+          {apiKey.modelRouting?.alias ? (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-text-muted">
+              Calls to this fixed name route to <span className="font-mono text-text-main">{apiKey.modelRouting.selectedModel}</span>.
+              The key owner can change that target on Key Usage, or call any allowed model directly.
+            </p>
+          ) : (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-text-muted">
+              Set one fixed name so the key owner can switch its target on Key Usage. Allowed model names remain directly callable.
+            </p>
+          )}
         </div>
       )}
       <div className="mt-2">
@@ -261,7 +319,12 @@ KeyAccessControls.propTypes = {
       accountRestricted: PropTypes.bool,
       accountIds: PropTypes.arrayOf(PropTypes.string),
     }),
+    modelRouting: PropTypes.shape({
+      alias: PropTypes.string,
+      selectedModel: PropTypes.string,
+    }),
   }).isRequired,
   onChange: PropTypes.func.isRequired,
+  onModelRoutingChange: PropTypes.func.isRequired,
   onRequestRestrict: PropTypes.func.isRequired,
 };

@@ -101,6 +101,8 @@ export default function KeyUsageClient() {
   const [error, setError] = useState("");
   const [summary, setSummary] = useState(null);
   const [refreshedAt, setRefreshedAt] = useState(null);
+  const [modelSaving, setModelSaving] = useState(false);
+  const [modelMessage, setModelMessage] = useState("");
   const requestControllerRef = useRef(null);
 
   const fetchUsage = useCallback(async (key, { background = false } = {}) => {
@@ -179,6 +181,8 @@ export default function KeyUsageClient() {
       setError("");
       setLoading(false);
       setBackgroundRefreshing(false);
+      setModelSaving(false);
+      setModelMessage("");
     }
   };
 
@@ -193,6 +197,32 @@ export default function KeyUsageClient() {
     setShowKey(false);
     setLoading(false);
     setBackgroundRefreshing(false);
+    setModelSaving(false);
+    setModelMessage("");
+  };
+
+  const selectModel = async (selectedModel) => {
+    if (!activeKey || !summary?.modelAccess?.publicModel) return;
+    setModelSaving(true);
+    setModelMessage("");
+    try {
+      const response = await fetch("/api/key-usage", {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${activeKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ selectedModel }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Unable to change model.");
+      setSummary((current) => current ? { ...current, modelAccess: body.modelAccess } : current);
+      setModelMessage("Model updated.");
+    } catch (selectionError) {
+      setModelMessage(selectionError.message || "Unable to change model.");
+    } finally {
+      setModelSaving(false);
+    }
   };
 
   return (
@@ -327,6 +357,58 @@ export default function KeyUsageClient() {
                 )}
               </div>
             </div>
+
+            {summary.modelAccess?.restricted && (
+              <Card padding="sm" className="mb-4">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[19px] text-brand-500" aria-hidden="true">route</span>
+                      <h2 className="text-sm font-semibold text-text-main">Available models</h2>
+                    </div>
+                    {summary.modelAccess.publicModel ? (
+                      <p className="mt-1.5 text-xs leading-5 text-text-muted">
+                        Use <code className="rounded bg-surface-2 px-1.5 py-0.5 text-text-main">{summary.modelAccess.publicModel}</code> for the selected target,
+                        or call any allowed model below by its own name.
+                      </p>
+                    ) : (
+                      <p className="mt-1.5 text-xs leading-5 text-text-muted">
+                        This key can call the models below directly. No fixed public model name is configured.
+                      </p>
+                    )}
+                  </div>
+                  {summary.modelAccess.publicModel && summary.modelAccess.allowedModels.length > 0 && (
+                    <div className="w-full shrink-0 sm:w-80">
+                      <label htmlFor="selected-key-model" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                        Target for {summary.modelAccess.publicModel}
+                      </label>
+                      <div className="relative">
+                        <select
+                          id="selected-key-model"
+                          value={summary.modelAccess.selectedModel || ""}
+                          onChange={(event) => void selectModel(event.target.value)}
+                          disabled={modelSaving}
+                          className="h-10 w-full appearance-none rounded-[10px] border border-border bg-surface-2 px-3 pr-9 font-mono text-xs text-text-main outline-none focus:border-brand-500/60 disabled:opacity-60"
+                        >
+                          {summary.modelAccess.allowedModels.map((model) => (
+                            <option key={model} value={model}>{model}</option>
+                          ))}
+                        </select>
+                        <span className={`material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[17px] text-text-muted ${modelSaving ? "animate-spin" : ""}`} aria-hidden="true">
+                          {modelSaving ? "progress_activity" : "expand_more"}
+                        </span>
+                      </div>
+                      {modelMessage && <p className="mt-1.5 text-[11px] text-text-muted" aria-live="polite">{modelMessage}</p>}
+                    </div>
+                  )}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {summary.modelAccess.allowedModels.map((model) => (
+                    <code key={model} className="rounded-full border border-border bg-surface-2 px-2.5 py-1 text-[11px] text-text-main">{model}</code>
+                  ))}
+                </div>
+              </Card>
+            )}
 
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <MetricCard

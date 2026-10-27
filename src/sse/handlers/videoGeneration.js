@@ -12,6 +12,7 @@ import {
   enforceKeyAccountAccess,
   getAllowedConnectionIds,
   getKeyAccessContext,
+  resolveKeyModelRequest,
 } from "../services/keyAccess.js";
 import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { handleVideoProxyCore, getVideoConfig, sanitizeSecrets } from "open-sse/handlers/videoCore.js";
@@ -122,13 +123,17 @@ export async function handleVideoCreate(request, action) {
   const bodyInfo = await readForwardableBody(request);
   if (bodyInfo.error) return bodyInfo.error;
 
+  const keyAccess = await getKeyAccessContext(request);
+  if (bodyInfo.parsed?.model) {
+    bodyInfo.parsed.model = resolveKeyModelRequest(keyAccess, String(bodyInfo.parsed.model));
+  }
+
   const resolved = await resolveVideoProvider(bodyInfo.parsed);
   if (resolved.error) return resolved.error;
   const { provider, model } = resolved;
 
   // Per-key access control: the routed provider/model must be listed. A body
   // we cannot read a model from (multipart) is denied for restricted keys.
-  const keyAccess = await getKeyAccessContext(request);
   const keyAccessDenied = await enforceKeyAccessResolved(
     keyAccess, bodyInfo.parsed?.model ? String(bodyInfo.parsed.model) : "", provider, model
   );
