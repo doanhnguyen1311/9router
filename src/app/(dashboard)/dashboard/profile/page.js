@@ -1,5 +1,6 @@
 "use client";
 
+import ChatHistorySettings from "@/shared/components/ChatHistorySettings";
 import { useState, useEffect, useRef } from "react";
 import { Card, Button, Toggle, Input } from "@/shared/components";
 import Modal, { ConfirmModal } from "@/shared/components/Modal";
@@ -1597,6 +1598,8 @@ export default function ProfilePage() {
             )}
           </div>
         </Card>
+
+        <ChatHistorySettings />
 
         {/* Observability Settings */}
         <Card>

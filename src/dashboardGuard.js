@@ -232,6 +232,9 @@ export async function proxy(request) {
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }
 
+  // History authenticates every call in its handler, including key-owner scope.
+  if (pathname === "/api/chat-history") return NextResponse.next();
+
   // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth.
   if (pathname.startsWith("/api/")) {
     if (isPublicApi(pathname)) return NextResponse.next();

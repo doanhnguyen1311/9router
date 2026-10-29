@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { KEY_EFFORT_VALUES } from "@/shared/utils/keyEffort.js";
 import { Button, Card, ThemeToggle } from "@/shared/components";
 
 const compactNumber = new Intl.NumberFormat("en-US", {
@@ -93,6 +94,8 @@ function scheduleLabel(windowInfo) {
 }
 
 export default function KeyUsageClient() {
+  const [effortBusy, setEffortBusy] = useState(false);
+  const [effortError, setEffortError] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [activeKey, setActiveKey] = useState("");
   const [showKey, setShowKey] = useState(false);
@@ -224,6 +227,17 @@ export default function KeyUsageClient() {
       setModelSaving(false);
     }
   };
+
+  async function selectEffort(value) {
+    if (!activeKey) return;
+    setEffortBusy(true); setEffortError("");
+    try {
+      const r = await fetch("/api/key-usage", { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeKey}` }, body: JSON.stringify({ selectedEffort: value || null }) });
+      const data = await r.json(); if (!r.ok) throw new Error(data.error);
+      setSummary(current => current ? { ...current, effortPolicy: data.effortPolicy } : current);
+    } catch (error) { setEffortError(error.message || "Could not select effort"); }
+    finally { setEffortBusy(false); }
+  }
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-bg">
@@ -358,6 +372,16 @@ export default function KeyUsageClient() {
               </div>
             </div>
 
+            {summary.effortPolicy && <Card padding="sm" className="mb-4">
+              <h2 className="font-medium">Reasoning effort</h2>
+              {summary.effortPolicy.allowUserChoice ? <label className="mt-2 block text-sm">Default for requests without an explicit effort
+                <select aria-label="My default effort" disabled={effortBusy} value={summary.effortPolicy.effort || ""} onChange={e => selectEffort(e.target.value)} className="ml-2 rounded-lg border border-border bg-surface p-2">
+                  <option value="">Provider / model default</option>{KEY_EFFORT_VALUES.map(v => <option key={v}>{v}</option>)}
+                </select>
+              </label> : <p className="mt-2 text-sm">Admin controls effort: <strong>{summary.effortPolicy.effort || "Invalid policy — contact admin"}</strong></p>}
+              <p className="mt-2 text-xs text-text-muted">Each model supports different levels. Admin model overrides may apply; unsupported defaults return an error. Your client can override the default only when user access is enabled.</p>
+              {effortError && <p role="alert" className="text-sm text-red-500">{effortError}</p>}
+            </Card>}
             {summary.modelAccess?.restricted && (
               <Card padding="sm" className="mb-4">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

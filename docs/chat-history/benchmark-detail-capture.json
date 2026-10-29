@@ -1,0 +1,76 @@
+{
+  "date": "2026-10-29",
+  "scenario": "Alternating local mock streaming, 20 warmups and 100 measured requests per mode; tiny message context. No live inference. Shared process/worker; noise and GC affect CPU/RSS. Before and after the bounded input/detail fixes, not a pre-History release comparison.",
+  "beforeFix": {
+    "disabled": {
+      "requests": 100,
+      "latencyP50Ms": 10.866821999999956,
+      "latencyP95Ms": 12.347130000000107,
+      "ttftP50Ms": 4.240663999999924,
+      "ttftP95Ms": 6.46072600000025,
+      "streamKiBPerSec": 57.38902931976921,
+      "cpuMs": 734.935,
+      "peakRssMiB": 215.20703125
+    },
+    "enabled": {
+      "requests": 100,
+      "latencyP50Ms": 10.917316000000028,
+      "latencyP95Ms": 13.115525000000162,
+      "ttftP50Ms": 4.352176000000327,
+      "ttftP95Ms": 6.793169999999918,
+      "streamKiBPerSec": 56.35782614530791,
+      "cpuMs": 721.355,
+      "peakRssMiB": 215.20703125
+    },
+    "metrics": {
+      "dropped": 0,
+      "saved": 115,
+      "errors": 0,
+      "activeDropped": 0,
+      "queueDepth": 9,
+      "queueCapacity": 50,
+      "queueBytes": 11793,
+      "queueMaxBytes": 16777216,
+      "maxRecordBytes": 524288,
+      "active": 0,
+      "captureReservedBytes": 0,
+      "ready": true
+    }
+  },
+  "afterFix": {
+    "disabled": {
+      "requests": 100,
+      "latencyP50Ms": 10.673423999999613,
+      "latencyP95Ms": 12.197666999999456,
+      "ttftP50Ms": 4.075294000000213,
+      "ttftP95Ms": 7.0118359999996756,
+      "streamKiBPerSec": 57.67921394524923,
+      "cpuMs": 737.255,
+      "peakRssMiB": 215.37890625
+    },
+    "enabled": {
+      "requests": 100,
+      "latencyP50Ms": 10.80785299999934,
+      "latencyP95Ms": 11.946837999999843,
+      "ttftP50Ms": 4.318374000000404,
+      "ttftP95Ms": 6.066955999999664,
+      "streamKiBPerSec": 57.7604005735908,
+      "cpuMs": 693.481,
+      "peakRssMiB": 215.22265625
+    },
+    "metrics": {
+      "dropped": 0,
+      "saved": 115,
+      "errors": 0,
+      "activeDropped": 0,
+      "queueDepth": 9,
+      "queueCapacity": 50,
+      "queueBytes": 11789,
+      "queueMaxBytes": 16777216,
+      "maxRecordBytes": 524288,
+      "active": 0,
+      "captureReservedBytes": 0,
+      "ready": true
+    }
+  }
+}

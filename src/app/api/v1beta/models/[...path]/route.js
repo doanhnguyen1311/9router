@@ -105,7 +105,7 @@ export async function POST(request, { params }) {
       body: JSON.stringify(convertedBody),
     });
 
-    const response = await handleChat(newRequest);
+    const response = await handleChat(newRequest, null, { ...body, model });
 
     if (stream) {
       // Transform OpenAI SSE => Gemini SSE on the fly.
@@ -412,6 +412,8 @@ function convertGeminiToInternal(geminiBody, model, stream) {
     max_tokens: geminiBody.generationConfig?.maxOutputTokens,
     temperature: geminiBody.generationConfig?.temperature,
     top_p: geminiBody.generationConfig?.topP,
+    // Keep native client thinking intent for per-key access/default resolution.
+    ...(geminiBody.generationConfig?.thinkingConfig ? { thinkingConfig: geminiBody.generationConfig.thinkingConfig } : {}),
   };
 }
 

@@ -1,3 +1,12 @@
+# Unreleased
+
+## Features
+- **Chat History ownership**: show the API key's display name and internal ID in the history list/detail, resolve existing records within the caller's authorized scope, and label deleted/unidentified keys without exposing credentials.
+- **Chat History details/settings**: save the capture switch immediately across navigation/reload, roll back failed saves, show readable user/assistant/tool messages in View detail, and preserve recent user input when long system prompts exhaust the content budget.
+- **API key effort**: add per-key Access / No access controls, admin-locked defaults and verified model overrides, plus owner selection on `/key-usage`. Enforce after protocol translation and on each fallback target without changing the shared provider default. See `docs/key-effort/README.md`.
+- **Chat History memory**: enforce a 50-record / 16 MiB queue and 512 KiB records, transfer owned buffers to the worker, bound capture before enqueue, and release stream/body references.
+- **Chat History**: add opt-in, bounded conversation capture with a background SQLite WAL worker, 30-day retention, key-owner isolation, Dashboard search/details and privacy/resource controls. See `docs/chat-history/README.md` for setup, API contract and validation limits.
+
 # v0.5.112 (2026-10-28)
 
 ## Features

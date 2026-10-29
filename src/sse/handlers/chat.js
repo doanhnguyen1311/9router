@@ -1,4 +1,20 @@
+import { setKeyEffortPolicy, getKeyEffortPolicy, effortRoutingModel, resolveKeyEffort } from "../services/keyEffort.js";
 import "open-sse/index.js";
+import { chatHistory, setHistoryObserver, getHistoryObserver } from "@/lib/chatHistory/service.js";
+
+export async function handleChat(request, clientRawRequest = null, historyBody = null) {
+  let response;
+  try {
+    response = await handleChatRequest(request, clientRawRequest, historyBody);
+  } catch (error) {
+    getHistoryObserver(request)?.finish(request.signal?.aborted ? "aborted" : "failed", error);
+    throw error;
+  }
+  const observer = getHistoryObserver(request);
+  if (!observer) return response;
+  try { return observer.wrap(response, request.signal); }
+  catch { observer.finish("failed"); return response; }
+}
 
 import {
   getProviderCredentials,
@@ -35,7 +51,7 @@ import { resolveSmartChoice } from "../services/systemoneRouter.js";
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
  */
-export async function handleChat(request, clientRawRequest = null) {
+async function handleChatRequest(request, clientRawRequest = null, historyBody = null) {
   let body;
   try {
     body = await request.json();
@@ -76,6 +92,7 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Enforce API key if enabled in settings
   const settings = await getSettings();
+  setHistoryObserver(request, chatHistory.begin(historyBody || clientRawRequest?.body || body, new URL(request.url).pathname, { secret: apiKey, userAgent: request.headers.get("user-agent") }));
   if (settings.requireApiKey) {
     if (!apiKey) {
       log.warn("AUTH", "Missing API key (requireApiKey=true)");
@@ -96,7 +113,11 @@ export async function handleChat(request, clientRawRequest = null) {
   // Per-key access control: a restricted key may call only its listed combos and
   // models. Checked once on the requested target, before bypass, combo expansion
   // and any credential lookup; an allowed combo grants the members it routes to.
-  const keyAccess = await getKeyAccessContext(request);
+  const keyAccess = await getKeyAccessContext(request, (key) => {
+    getHistoryObserver(request)?.identify(key?.isActive ? key.id : null);
+    if (key?.isActive && !key.isExpired) setKeyEffortPolicy(request, key.effortPolicy);
+  });
+  modelStr = effortRoutingModel(modelStr, getKeyEffortPolicy(request));
   modelStr = resolveKeyModelRequest(keyAccess, modelStr);
   body.model = modelStr;
   const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
@@ -207,6 +228,8 @@ export async function handleChat(request, clientRawRequest = null) {
  * Handle single model chat request
  */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, allowedConnectionIds = undefined) {
+  const effortPolicy = getKeyEffortPolicy(request);
+  modelStr = effortRoutingModel(modelStr, effortPolicy);
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -281,6 +304,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+  getHistoryObserver(request)?.route(provider, model);
+  const keyEffort = resolveKeyEffort(effortPolicy, body, provider, model);
+  if (keyEffort.error) return errorResponse(HTTP_STATUS.BAD_REQUEST, keyEffort.error);
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -331,6 +357,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const observer = getHistoryObserver(request);
+    const historyAttempt = observer?.attempt(provider, model);
+    observer?.protect(refreshedCredentials.apiKey);
+    observer?.protect(refreshedCredentials.accessToken);
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -359,6 +389,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
+      keyEffort: keyEffort.effort,
       // Per-provider user overrides (custom headers / connect timeout) from settings
       providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
       // Detect source format by endpoint + body
@@ -377,6 +408,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     });
 
+    observer?.result(historyAttempt, result.response?.status || result.status);
     if (result.success) return result.response;
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking

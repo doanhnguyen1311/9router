@@ -1,0 +1,6 @@
+simulation: chat-history
+routing: path
+mocks:
+  - name: history-upstream
+    routeKey: upstream
+    path: postman/mocks/chat-history-upstream/config.yaml

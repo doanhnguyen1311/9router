@@ -1,3 +1,5 @@
+import { hasAdminSession } from "@/lib/auth/adminSession.js";
+import { normalizeKeyEffortPolicy } from "@/lib/keyEffortPolicy.js";
 import { NextResponse } from "next/server";
 import {
   deleteApiKey,
@@ -84,7 +86,8 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive, access, quota, modelRouting } = body;
+    const { isActive, access, quota, modelRouting, effortPolicy } = body;
+    if (effortPolicy !== undefined && !(await hasAdminSession(request))) return NextResponse.json({ error: "Admin session required to change effort access" }, { status: 401 });
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -137,6 +140,11 @@ export async function PUT(request, { params }) {
       updateData.modelRouting = checked.value;
     }
 
+    if (effortPolicy !== undefined) {
+      const checked = await normalizeKeyEffortPolicy(effortPolicy);
+      if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
+      updateData.effortPolicy = checked.value;
+    }
     const updated = await updateApiKey(id, updateData);
 
     return NextResponse.json({ key: updated });
@@ -145,7 +153,7 @@ export async function PUT(request, { params }) {
     if (error?.code === "KEY_MODEL_ALIAS_CONFLICT") {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    if (error?.code === "INVALID_KEY_MODEL_ROUTING") {
+    if (["INVALID_KEY_MODEL_ROUTING", "INVALID_KEY_EFFORT"].includes(error?.code)) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     return NextResponse.json({ error: "Failed to update key" }, { status: 500 });

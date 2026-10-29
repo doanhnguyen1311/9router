@@ -19,6 +19,7 @@ import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
+import KeyEffortControls from "./components/KeyEffortControls";
 import KeyQuotaControls from "./components/KeyQuotaControls";
 
 const KEY_SYNC_FALLBACK_MS = 15000;
@@ -788,6 +789,16 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
+  const handleUpdateKeyEffort = async (id, effortPolicy) => {
+    try {
+      const res = await fetch(`/api/keys/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ effortPolicy }) });
+      const data = await res.json();
+      if (!res.ok) return { ok: false, error: data.error || "Could not save effort policy" };
+      setKeys(prev => prev.map(key => key.id === id ? data.key : key));
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error.message }; }
+  };
+
   const handleUpdateKeyQuota = async (id, quota) => {
     try {
       const res = await fetch(`/api/keys/${id}`, {
@@ -1208,6 +1219,7 @@ export default function APIPageClient({ machineId }) {
                       }
                     })}
                   />
+                  <KeyEffortControls apiKey={key} onSave={policy => handleUpdateKeyEffort(key.id, policy)} />
                   <KeyQuotaControls
                     apiKey={key}
                     onSave={(quota) => handleUpdateKeyQuota(key.id, quota)}

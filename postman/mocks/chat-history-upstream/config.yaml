@@ -1,0 +1,10 @@
+version: 1
+id: 0ad453da-7416-4c30-b8ec-97bb567dbcb7
+name: chat-history-upstream
+slug: chat-history-upstream
+protocol: http
+port: 4500
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

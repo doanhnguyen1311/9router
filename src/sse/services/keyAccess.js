@@ -47,10 +47,11 @@ const canonicalModel = (provider, model) => lower(`${provider}/${model}`);
  * Keys are only authenticated elsewhere (middleware / requireApiKey); this only
  * decides what an identified key may call.
  */
-export async function getKeyAccessContext(request) {
+export async function getKeyAccessContext(request, onIdentity = null) {
   const apiKey = extractClientApiKey(request);
   if (!apiKey) return null;
   const record = await getApiKeyByKey(apiKey);
+  if (onIdentity) onIdentity(record);
   if (!record?.access?.restricted && !record?.access?.accountRestricted) return null;
   return {
     keyId: record.id,

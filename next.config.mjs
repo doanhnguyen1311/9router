@@ -30,6 +30,9 @@ const nextConfig = {
     root: tracingRoot
   },
   outputFileTracingRoot: tracingRoot,
+  outputFileTracingIncludes: {
+    "/*": ["./src/lib/chatHistory/*.cjs"],
+  },
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]
   },

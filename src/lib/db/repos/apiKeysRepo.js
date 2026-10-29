@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import { KEY_EFFORT_DEFAULT, keyEffortFromColumn, validateKeyEffortPolicy, KEY_EFFORT_VALUES } from "@/shared/utils/keyEffort.js";
 import { getAdapter } from "../driver.js";
 import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
@@ -51,6 +52,7 @@ function rowToKey(row) {
       row.accessAccountIds,
     ),
     modelRouting: keyModelRoutingFromColumns(row.modelAlias, row.selectedModel),
+    effortPolicy: keyEffortFromColumn(row.effortPolicy),
     quota,
     isExpired: isKeyQuotaExpired(quota),
     usage: keyQuotaUsageFromColumns(
@@ -130,6 +132,15 @@ export async function getApiKeys() {
   return rows.map(rowToKey);
 }
 
+// Display metadata for one authorized History page. Never load credentials or
+// touch quota/reset state just to resolve the request owner's name.
+export async function getApiKeyNamesByIds(ids) {
+  const unique = [...new Set(ids.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 256))].slice(0, 50);
+  if (!unique.length) return [];
+  const db = await getAdapter();
+  return db.all(`SELECT id, substr(name, 1, 200) AS name FROM apiKeys WHERE id IN (${unique.map(() => '?').join(',')})`, unique);
+}
+
 export async function getApiKeyById(id) {
   const db = await getAdapter();
   let row = null;
@@ -183,6 +194,7 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
     createdAt: new Date().toISOString(),
     access: { restricted: false, allow: [], accountRestricted: false, accountIds: [] },
     modelRouting: { ...KEY_MODEL_ROUTING_DISABLED },
+    effortPolicy: { ...KEY_EFFORT_DEFAULT, overrides: [] },
     quota: normalizedQuota,
     isExpired: isKeyQuotaExpired(normalizedQuota),
     usage: {
@@ -234,6 +246,19 @@ export async function updateApiKey(id, data) {
     const current = rowToKey(row);
     const nextQuota = data.quota ? { ...current.quota, ...data.quota } : current.quota;
     const merged = { ...current, ...data, quota: nextQuota };
+    if (data.selectedEffort !== undefined) {
+      if (!current.effortPolicy.allowUserChoice || current.effortPolicy.invalid) {
+        const error = new Error("Effort is controlled by the administrator"); error.code = "KEY_EFFORT_FORBIDDEN"; throw error;
+      }
+      if (data.selectedEffort !== null && !KEY_EFFORT_VALUES.includes(data.selectedEffort)) {
+        const error = new Error("Invalid effort level"); error.code = "INVALID_KEY_EFFORT"; throw error;
+      }
+      merged.effortPolicy = { ...current.effortPolicy, effort: data.selectedEffort };
+    } else if (data.effortPolicy !== undefined) {
+      const checked = validateKeyEffortPolicy(data.effortPolicy);
+      if (!checked.ok) { const error = new Error(checked.error); error.code = "INVALID_KEY_EFFORT"; throw error; }
+      merged.effortPolicy = checked.value;
+    }
     if (data.modelRouting !== undefined) {
       const checked = validateKeyModelRoutingInput(data.modelRouting, merged.access);
       if (!checked.ok) {
@@ -277,7 +302,7 @@ export async function updateApiKey(id, data) {
       `UPDATE apiKeys SET
         key = ?, name = ?, machineId = ?, isActive = ?,
         accessRestricted = ?, accessAllow = ?, accessAccountRestricted = ?, accessAccountIds = ?,
-        modelAlias = ?, selectedModel = ?,
+        modelAlias = ?, selectedModel = ?, effortPolicy = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
         quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
@@ -286,6 +311,7 @@ export async function updateApiKey(id, data) {
         merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0,
         cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
         routingCols.modelAlias, routingCols.selectedModel,
+        JSON.stringify(merged.effortPolicy),
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
         quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

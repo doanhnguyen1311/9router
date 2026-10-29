@@ -465,6 +465,7 @@ export async function getApiKeyUsageSummary(apiKey) {
       cost,
       modelCount: models.length,
     },
+    effortPolicy: keyRecord.effortPolicy,
     modelAccess: {
       restricted: keyRecord.access.restricted === true,
       allowedModels: keyRecord.access.restricted ? [...keyRecord.access.allow] : [],

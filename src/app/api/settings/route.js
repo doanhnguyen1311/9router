@@ -1,3 +1,5 @@
+import { historyIdentity } from "@/lib/chatHistory/auth.js";
+import { HISTORY_DEFAULTS, historyConfig } from "@/lib/chatHistory/config.js";
 import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
@@ -38,6 +40,14 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
+    if (Object.keys(HISTORY_DEFAULTS).some(key => Object.hasOwn(body, key))) {
+      if (!(await historyIdentity(request, true))) return NextResponse.json({ error: "Admin session required" }, { status: 401 });
+      const validated = historyConfig(body);
+      for (const key of Object.keys(HISTORY_DEFAULTS)) {
+        if (!Object.hasOwn(body, key)) continue;
+        if (body[key] !== validated[key]) return NextResponse.json({ error: `Invalid ${key}` }, { status: 400 });
+      }
+    }
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];

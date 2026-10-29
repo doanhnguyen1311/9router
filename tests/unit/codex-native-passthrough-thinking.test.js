@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CodexExecutor } from "../../open-sse/executors/codex.js";
+import { applyKeyEffort } from "../../open-sse/handlers/chatCore/keyEffort.js";
 
 const { executeMock, forcedSSEToJsonMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
@@ -35,7 +37,7 @@ vi.mock("../../open-sse/handlers/chatCore/sseToJsonHandler.js", () => ({
 
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 
-async function runNativeCodexRequest(model, reasoning) {
+async function runNativeCodexRequest(model, reasoning, keyEffort = null) {
   const body = {
     model,
     input: "hello",
@@ -55,6 +57,7 @@ async function runNativeCodexRequest(model, reasoning) {
     ponytailEnabled: false,
     pxpipeEnabled: false,
     sourceFormatOverride: "openai-responses",
+    keyEffort,
     clientRawRequest: {
       endpoint: "/v1/responses",
       body,
@@ -108,4 +111,19 @@ describe("native Codex passthrough thinking suffixes", () => {
     expect(body.model).toBe("gpt-5.6-terra");
     expect(body.reasoning).toEqual({ effort: "ultra" });
   });
+  it("enforces per-key effort after native suffix handling without changing the model", async () => {
+    const body = await runNativeCodexRequest("gpt-6.1-sol(max)", { effort: "max", summary: "auto" }, "low");
+    expect(body.model).toBe("gpt-6.1-sol");
+    expect(body.reasoning.effort).toBe("low");
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  it.each(['low', 'medium', 'high', 'xhigh', 'max'])("keeps locked %s through the actual Codex executor", effort => {
+    const executor = new CodexExecutor();
+    const body = applyKeyEffort({ model: 'gpt-6.1-sol', input: 'hello', reasoning: { effort: 'max' } }, 'codex', 'gpt-6.1-sol', 'openai-responses', effort);
+    const transformed = executor.transformRequest('gpt-6.1-sol', body, true, { providerSpecificData: {} });
+    expect(transformed.reasoning.effort).toBe(effort);
+    expect(transformed.model).toBe('gpt-6.1-sol');
+  });
+
 });

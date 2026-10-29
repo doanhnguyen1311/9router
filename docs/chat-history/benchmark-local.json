@@ -1,0 +1,32 @@
+{
+  "disabled": {
+    "requests": 100,
+    "latencyP50Ms": 11.176003999999011,
+    "latencyP95Ms": 13.250770000000557,
+    "ttftP50Ms": 4.18019600000116,
+    "ttftP95Ms": 7.585572999998476,
+    "streamKiBPerSec": 54.86487709806902,
+    "cpuMs": 829.19,
+    "peakRssMiB": 214.5
+  },
+  "enabled": {
+    "requests": 100,
+    "latencyP50Ms": 11.30689799999891,
+    "latencyP95Ms": 13.377333000000363,
+    "ttftP50Ms": 4.477109000001292,
+    "ttftP95Ms": 7.236918000000514,
+    "streamKiBPerSec": 54.75250016854385,
+    "cpuMs": 759.863,
+    "peakRssMiB": 214
+  },
+  "metrics": {
+    "dropped": 0,
+    "saved": 115,
+    "errors": 0,
+    "activeDropped": 0,
+    "queueDepth": 9,
+    "queueBytes": 11791,
+    "active": 0,
+    "ready": true
+  }
+}

@@ -305,7 +305,7 @@ describe("API key quota reset persistence", () => {
       INSERT INTO _meta(key, value) VALUES ('schemaVersion', '0'), ('backupSchemaVersion', '5');
       CREATE TABLE apiKeys (
         id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT, machineId TEXT,
-        isActive INTEGER DEFAULT 1, createdAt TEXT NOT NULL,
+        isActive INTEGER DEFAULT 1, createdAt TEXT NOT NULL, modelAlias TEXT,
         quotaMaxRequests INTEGER, quotaUsedRequests INTEGER DEFAULT 0,
         quotaResetMode TEXT DEFAULT 'manual', quotaResetInterval TEXT, quotaNextResetAt TEXT
       );
@@ -333,6 +333,6 @@ describe("API key quota reset persistence", () => {
       quota: { maxRequests: 5, resetMode: "scheduled", resetInterval: "weekly" },
       usage: { requests: 3, nextResetAt: "2026-12-01T00:00:00.000Z" },
     });
-    expect(fs.readdirSync(path.join(tempDir, "db", "backups")).some((name) => name.startsWith("schema-5-to-7"))).toBe(true);
+    expect(fs.readdirSync(path.join(tempDir, "db", "backups")).some((name) => name.startsWith("schema-5-to-9"))).toBe(true);
   });
 });

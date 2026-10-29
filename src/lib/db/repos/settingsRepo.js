@@ -1,3 +1,5 @@
+import { HISTORY_DEFAULTS, historyConfig } from "@/lib/chatHistory/config.js";
+import { chatHistory } from "@/lib/chatHistory/service.js";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
@@ -5,6 +7,7 @@ const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
 
 const DEFAULT_SETTINGS = {
+  ...HISTORY_DEFAULTS,
   cloudEnabled: false,
   tunnelEnabled: false,
   tunnelUrl: "",
@@ -101,12 +104,14 @@ export function mergeWithDefaults(raw) {
       }
     }
   }
-  return merged;
+  return { ...merged, ...historyConfig(merged) };
 }
 
 export async function getSettings() {
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  const settings = mergeWithDefaults(raw);
+  chatHistory.configure(settings);
+  return settings;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -122,7 +127,9 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
-  return mergeWithDefaults(next);
+  const settings = mergeWithDefaults(next);
+  chatHistory.configure(settings);
+  return settings;
 }
 
 export async function isCloudEnabled() {

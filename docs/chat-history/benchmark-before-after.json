@@ -1,0 +1,37 @@
+{
+  "disabled": {
+    "requests": 100,
+    "latencyP50Ms": 11.0739480000002,
+    "latencyP95Ms": 13.136614999999438,
+    "ttftP50Ms": 4.151898000000074,
+    "ttftP95Ms": 7.100730000000112,
+    "streamKiBPerSec": 55.666126920671324,
+    "cpuMs": 783.425,
+    "peakRssMiB": 214.91796875
+  },
+  "enabled": {
+    "requests": 100,
+    "latencyP50Ms": 11.335105000000112,
+    "latencyP95Ms": 14.107544000000416,
+    "ttftP50Ms": 4.463442000000214,
+    "ttftP95Ms": 9.045687000000726,
+    "streamKiBPerSec": 53.96351687042873,
+    "cpuMs": 825.587,
+    "peakRssMiB": 214.91796875
+  },
+  "metrics": {
+    "dropped": 0,
+    "saved": 115,
+    "errors": 0,
+    "activeDropped": 0,
+    "queueDepth": 9,
+    "queueBytes": 11790,
+    "active": 0,
+    "ready": true
+  },
+  "baseline": {
+    "kind": "original HEAD chat handler",
+    "commit": "2873e28786f5a13172a4aa6c888e6751a151221e",
+    "note": "disabled label represents the original unmodified chat handler, not current feature-disabled mode"
+  }
+}

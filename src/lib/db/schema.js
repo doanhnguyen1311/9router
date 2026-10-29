@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -93,6 +93,8 @@ export const TABLES = {
       // key owner's currently selected member of accessAllow.
       modelAlias: "TEXT COLLATE NOCASE",
       selectedModel: "TEXT",
+      // NULL preserves existing client-controlled effort. Corrupt JSON fails closed.
+      effortPolicy: "TEXT",
       // Optional per-window quotas and their resettable counters. NULL limit = unlimited.
       quotaMaxCost: "REAL",
       quotaMaxInputTokens: "INTEGER",
