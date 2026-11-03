@@ -107,6 +107,7 @@ export default function KeyUsageClient() {
   const [modelSaving, setModelSaving] = useState(false);
   const [modelMessage, setModelMessage] = useState("");
   const requestControllerRef = useRef(null);
+  const canViewModelList = summary?.permissions?.canViewModelList !== false;
 
   const fetchUsage = useCallback(async (key, { background = false } = {}) => {
     if (background && requestControllerRef.current) return;
@@ -382,7 +383,7 @@ export default function KeyUsageClient() {
               <p className="mt-2 text-xs text-text-muted">Each model supports different levels. Admin model overrides may apply; unsupported defaults return an error. Your client can override the default only when user access is enabled.</p>
               {effortError && <p role="alert" className="text-sm text-red-500">{effortError}</p>}
             </Card>}
-            {summary.modelAccess?.restricted && (
+            {canViewModelList && summary.modelAccess?.restricted && (
               <Card padding="sm" className="mb-4">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
@@ -460,10 +461,10 @@ export default function KeyUsageClient() {
                 <Progress value={summary.usage.requests} limit={summary.quota.maxRequests} label="Request quota" />
               </MetricCard>
               <MetricCard
-                icon="deployed_code"
-                label="Models used"
-                value={exactNumber.format(summary.usage.modelCount)}
-                detail={summary.usage.modelCount === 1 ? "Model in this window" : "Models in this window"}
+                icon={canViewModelList ? "deployed_code" : "calendar_month"}
+                label={canViewModelList ? "Models used" : "Usage window"}
+                value={canViewModelList ? exactNumber.format(summary.usage.modelCount) : formatDate(summary.window.startedAt, false)}
+                detail={canViewModelList ? (summary.usage.modelCount === 1 ? "Model in this window" : "Models in this window") : "Current tracking period"}
               >
                 <div className="mt-4 flex items-center justify-between text-[11px] text-text-muted">
                   <span>Window started</span>
@@ -472,7 +473,7 @@ export default function KeyUsageClient() {
               </MetricCard>
             </div>
 
-            <Card padding="none" className="mt-4 overflow-hidden">
+            {canViewModelList && <Card padding="none" className="mt-4 overflow-hidden">
               <div className="flex items-center justify-between border-b border-border-subtle px-4 py-4 sm:px-5">
                 <div>
                   <h2 className="text-sm font-semibold text-text-main">Model activity</h2>
@@ -522,7 +523,7 @@ export default function KeyUsageClient() {
                   </table>
                 </div>
               )}
-            </Card>
+            </Card>}
 
             <p className="mt-4 text-center text-[11px] leading-5 text-text-muted">
               Request count includes admitted calls. Token and model details appear after a provider returns usage data.

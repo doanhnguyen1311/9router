@@ -1,7 +1,7 @@
 import { KEY_EFFORT_VALUES } from "@/shared/utils/keyEffort.js";
 import { NextResponse } from "next/server";
 import { getApiKeyUsageSummary } from "@/lib/usageDb.js";
-import { getApiKeyByKey, updateApiKey } from "@/lib/localDb.js";
+import { getApiKeyByKey, getSettings, updateApiKey } from "@/lib/localDb.js";
 import { extractClientApiKey } from "@/shared/utils/requestApiKey.js";
 import { findAllowedModel } from "@/shared/utils/keyModelRouting.js";
 
@@ -12,8 +12,59 @@ const NO_STORE_HEADERS = {
   Pragma: "no-cache",
 };
 
+function visibilityFromSettings(settings) {
+  return {
+    allowKeyUsage: settings?.allowKeyUsage !== false,
+    canViewModelList: settings?.allowKeyUsageModelList !== false,
+  };
+}
+
+function usageDisabledResponse() {
+  return NextResponse.json(
+    { error: "Key Usage is disabled by the administrator." },
+    { status: 403, headers: NO_STORE_HEADERS },
+  );
+}
+
+function visibleSummary(summary, canViewModelList) {
+  const response = {
+    ...summary,
+    permissions: { canViewModelList },
+  };
+  if (!canViewModelList) {
+    delete response.modelAccess;
+    delete response.models;
+    if (response.effortPolicy) {
+      response.effortPolicy = { ...response.effortPolicy };
+      delete response.effortPolicy.overrides;
+    }
+  }
+  return response;
+}
+
+function updatedPreferences(updated, canViewModelList) {
+  const effortPolicy = { ...updated.effortPolicy };
+  if (!canViewModelList) delete effortPolicy.overrides;
+  const response = {
+    effortPolicy,
+    permissions: { canViewModelList },
+  };
+  if (canViewModelList) {
+    response.modelAccess = {
+      restricted: updated.access.restricted === true,
+      allowedModels: [...updated.access.allow],
+      publicModel: updated.modelRouting.alias,
+      selectedModel: updated.modelRouting.selectedModel,
+    };
+  }
+  return response;
+}
+
 export async function GET(request) {
   try {
+    const visibility = visibilityFromSettings(await getSettings());
+    if (!visibility.allowKeyUsage) return usageDisabledResponse();
+
     const apiKey = extractClientApiKey(request);
     const summary = await getApiKeyUsageSummary(apiKey);
 
@@ -26,7 +77,10 @@ export async function GET(request) {
       );
     }
 
-    return NextResponse.json(summary, { headers: NO_STORE_HEADERS });
+    return NextResponse.json(
+      visibleSummary(summary, visibility.canViewModelList),
+      { headers: NO_STORE_HEADERS },
+    );
   } catch (error) {
     console.error("[API] Failed to get API key usage:", error);
     return NextResponse.json(
@@ -38,6 +92,9 @@ export async function GET(request) {
 
 export async function PATCH(request) {
   try {
+    const visibility = visibilityFromSettings(await getSettings());
+    if (!visibility.allowKeyUsage) return usageDisabledResponse();
+
     const apiKey = extractClientApiKey(request);
     const keyRecord = await getApiKeyByKey(apiKey);
     if (!keyRecord?.isActive || keyRecord.isExpired) {
@@ -52,6 +109,12 @@ export async function PATCH(request) {
     }
     const updates = {};
     if (body.selectedModel !== undefined) {
+      if (!visibility.canViewModelList) {
+        return NextResponse.json(
+          { error: "Model viewing and selection are disabled by the administrator." },
+          { status: 403, headers: NO_STORE_HEADERS },
+        );
+      }
       if (!keyRecord.modelRouting?.alias || typeof body.selectedModel !== "string") return NextResponse.json({ error: "Public model name required to select a target" }, { status: 400, headers: NO_STORE_HEADERS });
       const selectedModel = findAllowedModel(keyRecord.access.allow, body.selectedModel);
       if (!selectedModel) return NextResponse.json({ error: "Selected model is not allowed for this API key" }, { status: 403, headers: NO_STORE_HEADERS });
@@ -64,15 +127,10 @@ export async function PATCH(request) {
     }
     // The repository rechecks effort access inside its write transaction.
     const updated = await updateApiKey(keyRecord.id, updates);
-    return NextResponse.json({
-      effortPolicy: updated.effortPolicy,
-      modelAccess: {
-        restricted: updated.access.restricted === true,
-        allowedModels: [...updated.access.allow],
-        publicModel: updated.modelRouting.alias,
-        selectedModel: updated.modelRouting.selectedModel,
-      },
-    }, { headers: NO_STORE_HEADERS });
+    return NextResponse.json(
+      updatedPreferences(updated, visibility.canViewModelList),
+      { headers: NO_STORE_HEADERS },
+    );
   } catch (error) {
     console.error("[API] Failed to update API key model selection:", error);
     if (error?.code === "KEY_EFFORT_FORBIDDEN") return NextResponse.json({ error: "Effort is controlled by the administrator" }, { status: 403, headers: NO_STORE_HEADERS });

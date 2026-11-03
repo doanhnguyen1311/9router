@@ -28,6 +28,8 @@ const DEFAULT_SETTINGS = {
   },
   requireLogin: true,
   requireApiKey: true,
+  allowKeyUsage: true,
+  allowKeyUsageModelList: true,
   tunnelDashboardAccess: true,
   authMode: "password",
   ssoType: "oidc",
