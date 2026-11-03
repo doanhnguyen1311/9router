@@ -53,6 +53,8 @@ function rowToKey(row) {
     ),
     modelRouting: keyModelRoutingFromColumns(row.modelAlias, row.selectedModel),
     effortPolicy: keyEffortFromColumn(row.effortPolicy),
+    allowKeyUsage: row.allowKeyUsage !== 0 && row.allowKeyUsage !== false,
+    allowKeyUsageModelList: row.allowKeyUsageModelList !== 0 && row.allowKeyUsageModelList !== false,
     quota,
     isExpired: isKeyQuotaExpired(quota),
     usage: keyQuotaUsageFromColumns(
@@ -195,6 +197,8 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
     access: { restricted: false, allow: [], accountRestricted: false, accountIds: [] },
     modelRouting: { ...KEY_MODEL_ROUTING_DISABLED },
     effortPolicy: { ...KEY_EFFORT_DEFAULT, overrides: [] },
+    allowKeyUsage: true,
+    allowKeyUsageModelList: true,
     quota: normalizedQuota,
     isExpired: isKeyQuotaExpired(normalizedQuota),
     usage: {
@@ -237,13 +241,32 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
   return apiKey;
 }
 
-export async function updateApiKey(id, data) {
+export async function updateApiKey(id, data, options = {}) {
   const db = await getAdapter();
   let result = null;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
     const current = rowToKey(row);
+    if (options.keyUsageSelfService === true) {
+      if (!current.allowKeyUsage) {
+        const error = new Error("Key Usage is disabled for this API key");
+        error.code = "KEY_USAGE_FORBIDDEN";
+        throw error;
+      }
+      if (data.modelRouting !== undefined && !current.allowKeyUsageModelList) {
+        const error = new Error("Model viewing and selection are disabled for this API key");
+        error.code = "KEY_USAGE_MODEL_LIST_FORBIDDEN";
+        throw error;
+      }
+    }
+    for (const field of ["allowKeyUsage", "allowKeyUsageModelList"]) {
+      if (data[field] !== undefined && typeof data[field] !== "boolean") {
+        const error = new Error(`${field} must be a boolean`);
+        error.code = "INVALID_KEY_USAGE_ACCESS";
+        throw error;
+      }
+    }
     const nextQuota = data.quota ? { ...current.quota, ...data.quota } : current.quota;
     const merged = { ...current, ...data, quota: nextQuota };
     if (data.selectedEffort !== undefined) {
@@ -303,6 +326,7 @@ export async function updateApiKey(id, data) {
         key = ?, name = ?, machineId = ?, isActive = ?,
         accessRestricted = ?, accessAllow = ?, accessAccountRestricted = ?, accessAccountIds = ?,
         modelAlias = ?, selectedModel = ?, effortPolicy = ?,
+        allowKeyUsage = ?, allowKeyUsageModelList = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
         quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
@@ -312,6 +336,7 @@ export async function updateApiKey(id, data) {
         cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
         routingCols.modelAlias, routingCols.selectedModel,
         JSON.stringify(merged.effortPolicy),
+        merged.allowKeyUsage ? 1 : 0, merged.allowKeyUsageModelList ? 1 : 0,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
         quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

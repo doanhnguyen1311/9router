@@ -15,7 +15,6 @@ const SETTINGS_RESPONSE_HEADERS = {
 
 // Secrets must never be mass-assigned from request body (CWE-915)
 const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"];
-const BOOLEAN_SETTING_KEYS = ["allowKeyUsage", "allowKeyUsageModelList"];
 
 export async function GET() {
   try {
@@ -41,11 +40,6 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
-    for (const key of BOOLEAN_SETTING_KEYS) {
-      if (Object.hasOwn(body, key) && typeof body[key] !== "boolean") {
-        return NextResponse.json({ error: `${key} must be a boolean` }, { status: 400 });
-      }
-    }
     if (Object.keys(HISTORY_DEFAULTS).some(key => Object.hasOwn(body, key))) {
       if (!(await historyIdentity(request, true))) return NextResponse.json({ error: "Admin session required" }, { status: 401 });
       const validated = historyConfig(body);

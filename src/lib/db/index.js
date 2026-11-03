@@ -111,6 +111,8 @@ export async function exportDb() {
       ),
       modelRouting: keyModelRoutingFromColumns(r.modelAlias, r.selectedModel),
       effortPolicy: keyEffortFromColumn(r.effortPolicy),
+      allowKeyUsage: r.allowKeyUsage !== 0 && r.allowKeyUsage !== false,
+      allowKeyUsageModelList: r.allowKeyUsageModelList !== 0 && r.allowKeyUsageModelList !== false,
       quota: keyQuotaFromColumns(
         r.quotaMaxCost,
         r.quotaMaxInputTokens,
@@ -202,6 +204,13 @@ export async function importDb(payload) {
         if (!checked.ok) throw new Error(`apiKeys ${k.id}: ${checked.error}`);
         effortPolicy = checked.value;
       }
+      const allowKeyUsage = k.allowKeyUsage === undefined ? true : k.allowKeyUsage;
+      const allowKeyUsageModelList = k.allowKeyUsageModelList === undefined
+        ? true
+        : k.allowKeyUsageModelList;
+      if (typeof allowKeyUsage !== "boolean" || typeof allowKeyUsageModelList !== "boolean") {
+        throw new Error(`apiKeys ${k.id}: Key Usage access values must be booleans`);
+      }
       const cols = keyAccessToColumns(access);
       let modelRouting = KEY_MODEL_ROUTING_DISABLED;
       if (k.modelRouting !== undefined) {
@@ -244,16 +253,17 @@ export async function importDb(payload) {
         `INSERT OR REPLACE INTO apiKeys(
           id, key, name, machineId, isActive, createdAt,
           accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
-          modelAlias, selectedModel, effortPolicy,
+          modelAlias, selectedModel, effortPolicy, allowKeyUsage, allowKeyUsageModelList,
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
           quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
           k.createdAt || new Date().toISOString(),
           cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
           routingCols.modelAlias, routingCols.selectedModel, JSON.stringify(effortPolicy),
+          allowKeyUsage ? 1 : 0, allowKeyUsageModelList ? 1 : 0,
           quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
           quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
           quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

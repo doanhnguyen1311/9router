@@ -21,6 +21,7 @@ import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
 import KeyEffortControls from "./components/KeyEffortControls";
 import KeyQuotaControls from "./components/KeyQuotaControls";
+import KeyUsageAccessControls from "./components/KeyUsageAccessControls";
 
 const KEY_SYNC_FALLBACK_MS = 15000;
 const KEY_SYNC_DEBOUNCE_MS = 150;
@@ -35,8 +36,6 @@ export default function APIPageClient({ machineId }) {
   const [confirmState, setConfirmState] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
-  const [allowKeyUsage, setAllowKeyUsage] = useState(true);
-  const [allowKeyUsageModelList, setAllowKeyUsageModelList] = useState(true);
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -277,8 +276,6 @@ export default function APIPageClient({ machineId }) {
       ]);
       if (settingsData) {
         setRequireApiKey(settingsData.requireApiKey || false);
-        setAllowKeyUsage(settingsData.allowKeyUsage !== false);
-        setAllowKeyUsageModelList(settingsData.allowKeyUsageModelList !== false);
         setRequireLogin(settingsData.requireLogin !== false);
         setHasPassword(settingsData.hasPassword || false);
         setTunnelDashboardAccess(settingsData.tunnelDashboardAccess || false);
@@ -320,24 +317,6 @@ export default function APIPageClient({ machineId }) {
       if (updated) setRequireApiKey(value);
     } catch (error) {
       console.log("Error updating requireApiKey:", error);
-    }
-  };
-
-  const handleAllowKeyUsage = async (value) => {
-    try {
-      const updated = await useSettingsStore.getState().patchSettings({ allowKeyUsage: value });
-      if (updated) setAllowKeyUsage(value);
-    } catch (error) {
-      console.log("Error updating allowKeyUsage:", error);
-    }
-  };
-
-  const handleAllowKeyUsageModelList = async (value) => {
-    try {
-      const updated = await useSettingsStore.getState().patchSettings({ allowKeyUsageModelList: value });
-      if (updated) setAllowKeyUsageModelList(value);
-    } catch (error) {
-      console.log("Error updating allowKeyUsageModelList:", error);
     }
   };
 
@@ -821,6 +800,24 @@ export default function APIPageClient({ machineId }) {
     } catch (error) { return { ok: false, error: error.message }; }
   };
 
+  const handleUpdateKeyUsageAccess = async (id, updates) => {
+    try {
+      const res = await fetch(`/api/keys/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.key) {
+        return { ok: false, error: data.error || `Request failed (${res.status})` };
+      }
+      setKeys(prev => prev.map(key => key.id === id ? data.key : key));
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message || "Failed to update Key Usage access" };
+    }
+  };
+
   const handleUpdateKeyQuota = async (id, quota) => {
     try {
       const res = await fetch(`/api/keys/${id}`, {
@@ -1167,34 +1164,6 @@ export default function APIPageClient({ machineId }) {
           />
         </div>
 
-        <div className="pb-4 mb-4 border-b border-border">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="font-medium">Allow viewing Key Usage</p>
-              <p className="text-sm text-text-muted">
-                Let API key owners open Key Usage and view their totals, quotas, and preferences
-              </p>
-            </div>
-            <Toggle
-              checked={allowKeyUsage}
-              onChange={handleAllowKeyUsage}
-            />
-          </div>
-          <div className="ml-4 mt-4 flex items-center justify-between gap-4 border-l border-border pl-4">
-            <div>
-              <p className="font-medium">Allow viewing model list</p>
-              <p className="text-sm text-text-muted">
-                Show allowed models and per-model activity in Key Usage
-              </p>
-            </div>
-            <Toggle
-              checked={allowKeyUsageModelList}
-              onChange={handleAllowKeyUsageModelList}
-              disabled={!allowKeyUsage}
-            />
-          </div>
-        </div>
-
         {isRemoteHost && !requireApiKey && (
           <div className="mb-4 -mt-2">
             <SecurityWarning message="Endpoint is exposed without an API key." />
@@ -1251,6 +1220,10 @@ export default function APIPageClient({ machineId }) {
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
+                  <KeyUsageAccessControls
+                    apiKey={key}
+                    onChange={(updates) => handleUpdateKeyUsageAccess(key.id, updates)}
+                  />
                   <KeyAccessControls
                     apiKey={key}
                     onChange={(access) => handleUpdateKeyAccess(key.id, access)}

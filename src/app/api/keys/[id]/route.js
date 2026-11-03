@@ -86,7 +86,15 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive, access, quota, modelRouting, effortPolicy } = body;
+    const {
+      isActive,
+      access,
+      quota,
+      modelRouting,
+      effortPolicy,
+      allowKeyUsage,
+      allowKeyUsageModelList,
+    } = body;
     if (effortPolicy !== undefined && !(await hasAdminSession(request))) return NextResponse.json({ error: "Admin session required to change effort access" }, { status: 401 });
 
     const existing = await getApiKeyById(id);
@@ -96,6 +104,13 @@ export async function PUT(request, { params }) {
 
     const updateData = {};
     if (isActive !== undefined) updateData.isActive = isActive;
+    for (const [field, value] of Object.entries({ allowKeyUsage, allowKeyUsageModelList })) {
+      if (value === undefined) continue;
+      if (typeof value !== "boolean") {
+        return NextResponse.json({ error: `${field} must be a boolean` }, { status: 400 });
+      }
+      updateData[field] = value;
+    }
     if (access !== undefined) {
       const checked = validateKeyAccessInput(access);
       if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
@@ -153,7 +168,7 @@ export async function PUT(request, { params }) {
     if (error?.code === "KEY_MODEL_ALIAS_CONFLICT") {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    if (["INVALID_KEY_MODEL_ROUTING", "INVALID_KEY_EFFORT"].includes(error?.code)) {
+    if (["INVALID_KEY_MODEL_ROUTING", "INVALID_KEY_EFFORT", "INVALID_KEY_USAGE_ACCESS"].includes(error?.code)) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     return NextResponse.json({ error: "Failed to update key" }, { status: 500 });

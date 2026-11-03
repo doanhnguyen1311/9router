@@ -43,6 +43,8 @@ export async function POST(request) {
       name: apiKey.name,
       id: apiKey.id,
       machineId: apiKey.machineId,
+      allowKeyUsage: apiKey.allowKeyUsage,
+      allowKeyUsageModelList: apiKey.allowKeyUsageModelList,
       quota: apiKey.quota,
       usage: apiKey.usage,
     }, { status: 201 });

@@ -349,11 +349,15 @@ export async function getUsageHistory(filter = {}) {
  * Return the current quota-window usage visible to the owner of one API key.
  * The full key is used only as a parameterized lookup and is never echoed.
  */
-export async function getApiKeyUsageSummary(apiKey) {
+export async function getApiKeyUsageSummary(apiKey, providedKeyRecord = null) {
   if (!apiKey || typeof apiKey !== "string") return null;
+  if (providedKeyRecord && providedKeyRecord.key !== apiKey) return null;
 
-  const { getApiKeyByKey } = await import("./apiKeysRepo.js");
-  const keyRecord = await getApiKeyByKey(apiKey);
+  let keyRecord = providedKeyRecord;
+  if (!keyRecord) {
+    const { getApiKeyByKey } = await import("./apiKeysRepo.js");
+    keyRecord = await getApiKeyByKey(apiKey);
+  }
   if (!keyRecord?.isActive || keyRecord.isExpired) return null;
 
   const db = await getAdapter();
