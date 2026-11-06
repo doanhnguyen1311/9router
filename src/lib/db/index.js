@@ -19,6 +19,10 @@ import {
   validateKeyQuotaInput,
 } from "@/shared/utils/keyQuota.js";
 import { notifyApiKeysChanged } from "@/lib/apiKeyEvents.js";
+import {
+  isEncryptedV2UpstreamApiKey,
+  normalizeV2UpstreamBaseUrl,
+} from "@/lib/v2ProxyConfig.js";
 
 // Settings
 export {
@@ -47,7 +51,7 @@ export {
 
 // API keys
 export {
-  getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeys, getApiKeyById, getApiKeyByKey, getV2ProxyConfigByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
   admitApiKeyRequest, resetApiKeyUsage,
 } from "./repos/apiKeysRepo.js";
 
@@ -113,6 +117,13 @@ export async function exportDb() {
       effortPolicy: keyEffortFromColumn(r.effortPolicy),
       allowKeyUsage: r.allowKeyUsage !== 0 && r.allowKeyUsage !== false,
       allowKeyUsageModelList: r.allowKeyUsageModelList !== 0 && r.allowKeyUsageModelList !== false,
+      v2Proxy: {
+        enabled: r.v2Enabled === 1 || r.v2Enabled === true,
+        upstreamBaseUrl: r.v2UpstreamBaseUrl || null,
+        // Backups preserve the encrypted value; plaintext upstream credentials
+        // are never materialized by exportDb().
+        upstreamApiKeyEncrypted: r.v2UpstreamApiKeyEncrypted || null,
+      },
       quota: keyQuotaFromColumns(
         r.quotaMaxCost,
         r.quotaMaxInputTokens,
@@ -211,6 +222,27 @@ export async function importDb(payload) {
       if (typeof allowKeyUsage !== "boolean" || typeof allowKeyUsageModelList !== "boolean") {
         throw new Error(`apiKeys ${k.id}: Key Usage access values must be booleans`);
       }
+      let v2Enabled = false;
+      let v2UpstreamBaseUrl = null;
+      let v2UpstreamApiKeyEncrypted = null;
+      if (k.v2Proxy !== undefined) {
+        if (!k.v2Proxy || typeof k.v2Proxy !== "object" || Array.isArray(k.v2Proxy)
+          || typeof k.v2Proxy.enabled !== "boolean") {
+          throw new Error(`apiKeys ${k.id}: Invalid v2 proxy configuration`);
+        }
+        v2Enabled = k.v2Proxy.enabled;
+        if (v2Enabled) {
+          try {
+            v2UpstreamBaseUrl = normalizeV2UpstreamBaseUrl(k.v2Proxy.upstreamBaseUrl);
+          } catch (error) {
+            throw new Error(`apiKeys ${k.id}: ${error.message}`);
+          }
+          if (!isEncryptedV2UpstreamApiKey(k.v2Proxy.upstreamApiKeyEncrypted)) {
+            throw new Error(`apiKeys ${k.id}: Invalid encrypted v2 upstream API key`);
+          }
+          v2UpstreamApiKeyEncrypted = k.v2Proxy.upstreamApiKeyEncrypted;
+        }
+      }
       const cols = keyAccessToColumns(access);
       let modelRouting = KEY_MODEL_ROUTING_DISABLED;
       if (k.modelRouting !== undefined) {
@@ -254,16 +286,18 @@ export async function importDb(payload) {
           id, key, name, machineId, isActive, createdAt,
           accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
           modelAlias, selectedModel, effortPolicy, allowKeyUsage, allowKeyUsageModelList,
+          v2Enabled, v2UpstreamBaseUrl, v2UpstreamApiKeyEncrypted,
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
           quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
           k.createdAt || new Date().toISOString(),
           cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
           routingCols.modelAlias, routingCols.selectedModel, JSON.stringify(effortPolicy),
           allowKeyUsage ? 1 : 0, allowKeyUsageModelList ? 1 : 0,
+          v2Enabled ? 1 : 0, v2UpstreamBaseUrl, v2UpstreamApiKeyEncrypted,
           quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
           quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
           quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SCHEMA_VERSION } from "../../src/lib/db/schema.js";
 import {
   getNextQuotaResetAt,
   resolveQuotaResetSchedule,
@@ -333,6 +334,6 @@ describe("API key quota reset persistence", () => {
       quota: { maxRequests: 5, resetMode: "scheduled", resetInterval: "weekly" },
       usage: { requests: 3, nextResetAt: "2026-12-01T00:00:00.000Z" },
     });
-    expect(fs.readdirSync(path.join(tempDir, "db", "backups")).some((name) => name.startsWith("schema-5-to-9"))).toBe(true);
+    expect(fs.readdirSync(path.join(tempDir, "db", "backups")).some((name) => name.startsWith(`schema-5-to-${SCHEMA_VERSION}`))).toBe(true);
   });
 });

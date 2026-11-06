@@ -38,6 +38,7 @@ const PUBLIC_API_PATHS = [
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 // Keep root-level rewrites here too: middleware runs before Next.js rewrites.
 const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses"];
+const V2_PROXY_PREFIXES = ["/v2", "/api/v2"];
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -144,6 +145,22 @@ function isPublicLlmApi(pathname) {
   return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+function isV2ProxyApi(pathname) {
+  return V2_PROXY_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
+function numericV2AuthError() {
+  return new Response("1001", {
+    status: 401,
+    statusText: "",
+    headers: {
+      "content-type": "text/plain",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+    },
+  });
+}
+
 function extractApiKey(request) {
   const authHeader = request.headers.get("Authorization");
   if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
@@ -225,6 +242,15 @@ export async function proxy(request) {
     if (await hasValidCliToken(request) || await hasValidToken(request))
       return NextResponse.next();
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Unlike v1, v2 is always key-gated, including loopback calls. Its route
+  // applies the per-key v2 switch; this early gate keeps even middleware auth
+  // failures on the numeric-only error contract.
+  if (isV2ProxyApi(pathname)) {
+    if (request.method === "OPTIONS") return NextResponse.next();
+    if (await hasValidApiKey(request)) return NextResponse.next();
+    return numericV2AuthError();
   }
 
   if (isPublicLlmApi(pathname)) {

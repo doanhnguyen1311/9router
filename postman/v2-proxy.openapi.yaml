@@ -1,0 +1,63 @@
+openapi: 3.0.3
+info:
+  title: 9Router V2 forwarding proxy
+  version: 1.0.0
+  description: Server-side facade over a hidden per-key OpenAI-compatible v1 upstream.
+servers:
+  - url: /
+paths:
+  /v2/chat/completions:
+    post:
+      summary: Forward an OpenAI-compatible chat completion
+      description: The facade credential selects a hidden upstream and is replaced before forwarding.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Upstream success with facade-owned response headers.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/NumericError"
+        "401":
+          $ref: "#/components/responses/NumericError"
+        "403":
+          $ref: "#/components/responses/NumericError"
+        "429":
+          $ref: "#/components/responses/NumericError"
+        "500":
+          $ref: "#/components/responses/NumericError"
+        "502":
+          $ref: "#/components/responses/NumericError"
+        "504":
+          $ref: "#/components/responses/NumericError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: 9Router API key
+  responses:
+    NumericError:
+      description: Numeric-only error. No upstream details are returned.
+      content:
+        text/plain:
+          schema:
+            type: string
+            pattern: "^[0-9]+$"
+          examples:
+            redacted:
+              value: "2002"

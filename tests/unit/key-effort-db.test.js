@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { TABLES, buildCreateTableSql } from '../../src/lib/db/schema.js';
+import { SCHEMA_VERSION, TABLES, buildCreateTableSql } from '../../src/lib/db/schema.js';
 let dir;
 const originalDir = process.env.DATA_DIR;
 async function boot() { delete global._dbAdapter; vi.resetModules(); const db = await import('@/lib/db/index.js'); const { getAdapter } = await import('@/lib/db/driver.js'); return { db, adapter: await getAdapter() }; }
@@ -26,7 +26,7 @@ describe('key effort additive migration and transactional writes', () => {
     expect(adapter.all('PRAGMA table_info(apiKeys)').map(c => c.name)).toContain('effortPolicy');
     expect((await db.getApiKeyById('a')).effortPolicy).toEqual({ allowUserChoice: true, effort: null, overrides: [] });
     expect(adapter.get('SELECT model FROM usageHistory').model).toBe('keep-me');
-    expect(fs.readdirSync(path.join(dir, 'db/backups')).some(name => name.startsWith('schema-8-to-9'))).toBe(true);
+    expect(fs.readdirSync(path.join(dir, 'db/backups')).some(name => name.startsWith(`schema-8-to-${SCHEMA_VERSION}`))).toBe(true);
     expect((await db.createApiKey('new', 'machine')).effortPolicy.allowUserChoice).toBe(true);
   });
   it('round-trips policy with backups and keeps it across unrelated key changes', async () => {

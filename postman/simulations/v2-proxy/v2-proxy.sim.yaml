@@ -1,0 +1,6 @@
+simulation: v2-proxy
+routing: path
+mocks:
+  - name: v2-upstream
+    routeKey: upstream
+    path: postman/mocks/v2-upstream/config.yaml

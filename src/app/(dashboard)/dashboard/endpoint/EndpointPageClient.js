@@ -32,6 +32,10 @@ export default function APIPageClient({ machineId }) {
   const [keySyncStatus, setKeySyncStatus] = useState("connecting");
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyV2Enabled, setNewKeyV2Enabled] = useState(false);
+  const [newKeyV2Endpoint, setNewKeyV2Endpoint] = useState("");
+  const [newKeyV2ApiKey, setNewKeyV2ApiKey] = useState("");
+  const [newKeyError, setNewKeyError] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
 
@@ -690,13 +694,21 @@ export default function APIPageClient({ machineId }) {
   };
 
   const handleCreateKey = async () => {
-    if (!newKeyName.trim()) return;
+    if (!newKeyName.trim() || (newKeyV2Enabled && (!newKeyV2Endpoint.trim() || !newKeyV2ApiKey.trim()))) return;
 
     try {
+      setNewKeyError("");
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({
+          name: newKeyName,
+          v2Proxy: {
+            enabled: newKeyV2Enabled,
+            upstreamBaseUrl: newKeyV2Enabled ? newKeyV2Endpoint : undefined,
+            upstreamApiKey: newKeyV2Enabled ? newKeyV2ApiKey : undefined,
+          },
+        }),
       });
       const data = await res.json();
 
@@ -704,10 +716,16 @@ export default function APIPageClient({ machineId }) {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
+        setNewKeyV2Enabled(false);
+        setNewKeyV2Endpoint("");
+        setNewKeyV2ApiKey("");
         setShowAddModal(false);
+      } else {
+        setNewKeyError(data.error || "Failed to create API key");
       }
     } catch (error) {
       console.log("Error creating key:", error);
+      setNewKeyError("Failed to create API key");
     }
   };
 
@@ -1220,6 +1238,9 @@ export default function APIPageClient({ machineId }) {
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
+                  {key.v2Proxy?.enabled && (
+                    <p className="text-xs text-primary mt-1">V2 forwarding enabled</p>
+                  )}
                   <KeyUsageAccessControls
                     apiKey={key}
                     onChange={(updates) => handleUpdateKeyUsageAccess(key.id, updates)}
@@ -1296,6 +1317,10 @@ export default function APIPageClient({ machineId }) {
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
+          setNewKeyV2Enabled(false);
+          setNewKeyV2Endpoint("");
+          setNewKeyV2ApiKey("");
+          setNewKeyError("");
         }}
       >
         <div className="flex flex-col gap-4">
@@ -1305,14 +1330,58 @@ export default function APIPageClient({ machineId }) {
             onChange={(e) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
           />
+          <div className="rounded-lg border border-border p-3">
+            <Toggle
+              checked={newKeyV2Enabled}
+              onChange={(enabled) => {
+                setNewKeyV2Enabled(enabled);
+                setNewKeyError("");
+              }}
+              label="Allow this key to use v2"
+              description="Forward /v2 requests to a hidden OpenAI-compatible v1 endpoint"
+            />
+          </div>
+          {newKeyV2Enabled && (
+            <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface-2/40 p-3">
+              <Input
+                label="Upstream v1 endpoint"
+                type="url"
+                value={newKeyV2Endpoint}
+                onChange={(e) => setNewKeyV2Endpoint(e.target.value)}
+                placeholder="https://provider.example/v1"
+                hint="HTTPS public base URL only. It is never returned to the API key owner."
+                required
+                autoComplete="off"
+              />
+              <Input
+                label="Upstream API key"
+                type="password"
+                value={newKeyV2ApiKey}
+                onChange={(e) => setNewKeyV2ApiKey(e.target.value)}
+                placeholder="Upstream credential"
+                hint="Encrypted before it is stored and never returned by the API."
+                required
+                autoComplete="new-password"
+              />
+            </div>
+          )}
+          {newKeyError && <p className="text-sm text-red-500">{newKeyError}</p>}
           <div className="flex gap-2">
-            <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
+            <Button
+              onClick={handleCreateKey}
+              fullWidth
+              disabled={!newKeyName.trim() || (newKeyV2Enabled && (!newKeyV2Endpoint.trim() || !newKeyV2ApiKey.trim()))}
+            >
               Create
             </Button>
             <Button
               onClick={() => {
                 setShowAddModal(false);
                 setNewKeyName("");
+                setNewKeyV2Enabled(false);
+                setNewKeyV2Endpoint("");
+                setNewKeyV2ApiKey("");
+                setNewKeyError("");
               }}
               variant="ghost"
               fullWidth

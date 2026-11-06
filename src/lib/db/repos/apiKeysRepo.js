@@ -21,6 +21,12 @@ import {
   keyQuotaUsageFromColumns,
   resolveQuotaResetSchedule,
 } from "@/shared/utils/keyQuota.js";
+import {
+  decryptV2UpstreamApiKey,
+  encryptV2UpstreamApiKey,
+  v2ProxySummaryFromRow,
+  validateV2ProxyInput,
+} from "@/lib/v2ProxyConfig.js";
 
 function quotaFromRow(row) {
   return keyQuotaFromColumns(
@@ -55,6 +61,7 @@ function rowToKey(row) {
     effortPolicy: keyEffortFromColumn(row.effortPolicy),
     allowKeyUsage: row.allowKeyUsage !== 0 && row.allowKeyUsage !== false,
     allowKeyUsageModelList: row.allowKeyUsageModelList !== 0 && row.allowKeyUsageModelList !== false,
+    v2Proxy: v2ProxySummaryFromRow(row),
     quota,
     isExpired: isKeyQuotaExpired(quota),
     usage: keyQuotaUsageFromColumns(
@@ -171,8 +178,42 @@ export async function getApiKeyByKey(key) {
   return rowToKey(row);
 }
 
-export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED) {
+// Server-only lookup used by /v2. The client-facing key record contains only
+// enabled/configured booleans; the destination and decrypted credential never
+// leave this function's server-side return value.
+export async function getV2ProxyConfigByKey(key) {
+  if (!key) return null;
+  const db = await getAdapter();
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  if (!row) return null;
+  const record = rowToKey(row);
+  if (!record.v2Proxy.enabled) return { record, config: null, invalid: false };
+  const upstreamApiKey = decryptV2UpstreamApiKey(row.v2UpstreamApiKeyEncrypted, row.machineId);
+  if (!record.v2Proxy.configured || !upstreamApiKey) {
+    return { record, config: null, invalid: true };
+  }
+  return {
+    record,
+    invalid: false,
+    config: {
+      upstreamBaseUrl: row.v2UpstreamBaseUrl,
+      upstreamApiKey,
+    },
+  };
+}
+
+export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED, v2ProxyInput = undefined) {
   if (!machineId) throw new Error("machineId is required");
+  const checkedV2Proxy = validateV2ProxyInput(v2ProxyInput);
+  if (!checkedV2Proxy.ok) {
+    const error = new Error(checkedV2Proxy.error);
+    error.code = "INVALID_V2_PROXY_CONFIG";
+    throw error;
+  }
+  const v2Proxy = checkedV2Proxy.value;
+  const encryptedUpstreamApiKey = v2Proxy.enabled
+    ? encryptV2UpstreamApiKey(v2Proxy.upstreamApiKey, machineId)
+    : null;
   const db = await getAdapter();
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
   const result = generateApiKeyWithMachine(machineId);
@@ -199,6 +240,7 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
     effortPolicy: { ...KEY_EFFORT_DEFAULT, overrides: [] },
     allowKeyUsage: true,
     allowKeyUsageModelList: true,
+    v2Proxy: { enabled: v2Proxy.enabled, configured: v2Proxy.enabled },
     quota: normalizedQuota,
     isExpired: isKeyQuotaExpired(normalizedQuota),
     usage: {
@@ -222,14 +264,16 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED)
       id, key, name, machineId, isActive, createdAt,
       accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
       modelAlias, selectedModel,
+      v2Enabled, v2UpstreamBaseUrl, v2UpstreamApiKeyEncrypted,
       quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
       quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
       quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
     [
       apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
       cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
       null, null,
+      v2Proxy.enabled ? 1 : 0, v2Proxy.upstreamBaseUrl, encryptedUpstreamApiKey,
       quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
       quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
       quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

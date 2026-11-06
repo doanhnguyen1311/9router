@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getApiKeys, createApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { validateKeyQuotaInput } from "@/shared/utils/keyQuota.js";
+import { validateV2ProxyInput } from "@/lib/v2ProxyConfig.js";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +21,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { name, quota } = body;
+    const { name, quota, v2Proxy } = body;
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -34,9 +35,14 @@ export async function POST(request) {
       }
     }
 
+    const checkedV2Proxy = validateV2ProxyInput(v2Proxy);
+    if (!checkedV2Proxy.ok) {
+      return NextResponse.json({ error: checkedV2Proxy.error }, { status: 400 });
+    }
+
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
-    const apiKey = await createApiKey(name, machineId, checkedQuota?.value);
+    const apiKey = await createApiKey(name, machineId, checkedQuota?.value, checkedV2Proxy.value);
 
     return NextResponse.json({
       key: apiKey.key,
@@ -45,6 +51,7 @@ export async function POST(request) {
       machineId: apiKey.machineId,
       allowKeyUsage: apiKey.allowKeyUsage,
       allowKeyUsageModelList: apiKey.allowKeyUsageModelList,
+      v2Proxy: apiKey.v2Proxy,
       quota: apiKey.quota,
       usage: apiKey.usage,
     }, { status: 201 });

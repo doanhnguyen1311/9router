@@ -1,0 +1,23 @@
+purpose:
+  stands_in_for: A synthetic OpenAI-compatible v1 upstream that requires its own bearer credential and can return success, HTTP error, or an SSE error event.
+  unblocks: End-to-end verification that the real v2 proxy replaces facade authentication and removes upstream endpoint, credential, body, and header details from failures.
+assumptions:
+  - id: upstream-bearer-auth
+    status: unknown
+    claim: The configured real upstream accepts its API key as a Bearer credential when the facade caller authenticates with Bearer.
+    reason: The local stand-in models this behavior, but no particular external provider contract or live endpoint was supplied for verification.
+    verification: On 2026-11-06, the synthetic stand-in required Bearer fixture-upstream-key. This checks the caller's header replacement only and does not establish a real provider's authentication contract.
+    source: postman/mocks/v2-upstream/default.js; src/lib/v2Proxy.js
+    updated_at: "2026-11-06"
+  - id: numeric-error-redaction
+    status: supported
+    claim: In the simulated HTTP-error and SSE-error scenarios, no synthetic upstream endpoint, credential, error text, or private response header reaches the facade response.
+    reason: The local simulation exercised the real proxy code over HTTP. Both the explicit 500 response and the error event inside a 200 SSE stream contained synthetic private endpoint/key text, while the facade assertions found only the numeric error code and no private upstream headers or values.
+    verification: On 2026-11-06, ran Postman CLI 1.74.0 on port 14991 and executed all three cases in tests/unit/v2-proxy-simulation.test.js. The simulation log recorded three POST /chat/completions requests with statuses 200, 500, and 200. All 3 assertions passed. This supports redaction against this stand-in, not behavior of an unspecified real upstream.
+    source: src/lib/v2Proxy.js; postman/mocks/v2-upstream/default.js; tests/unit/v2-proxy-simulation.test.js
+    updated_at: "2026-11-06"
+fingerprints:
+  - id: local-dirty-2026-11-06
+    date: "2026-11-06"
+    commit: 537d7a88d20905c58fe545ebb9c2f0d98cf22970 (dirty working tree)
+    cli: Postman CLI 1.74.0

@@ -1,0 +1,11 @@
+version: 1
+id: 51395d6a-d2aa-48ca-a027-a6a7def0b455
+name: v2-upstream
+slug: v2-upstream
+protocol: http
+port: 4600
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

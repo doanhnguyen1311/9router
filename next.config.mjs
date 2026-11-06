@@ -68,6 +68,14 @@ const nextConfig = {
   async rewrites() {
     return [
       {
+        source: "/v2/:path*",
+        destination: "/api/v2/:path*"
+      },
+      {
+        source: "/v2",
+        destination: "/api/v2"
+      },
+      {
         source: "/v1/v1/:path*",
         destination: "/api/v1/:path*"
       },

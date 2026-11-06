@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -99,6 +99,11 @@ export const TABLES = {
       // behavior by default; the model-list permission is a child of Key Usage.
       allowKeyUsage: "INTEGER DEFAULT 1",
       allowKeyUsageModelList: "INTEGER DEFAULT 1",
+      // Optional v2 reverse-proxy destination. The upstream credential is
+      // authenticated encryption and is never returned by key-list APIs.
+      v2Enabled: "INTEGER DEFAULT 0",
+      v2UpstreamBaseUrl: "TEXT",
+      v2UpstreamApiKeyEncrypted: "TEXT",
       // Optional per-window quotas and their resettable counters. NULL limit = unlimited.
       quotaMaxCost: "REAL",
       quotaMaxInputTokens: "INTEGER",

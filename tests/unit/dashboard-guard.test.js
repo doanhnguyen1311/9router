@@ -216,6 +216,47 @@ describe("dashboard guard public LLM API access", () => {
   });
 });
 
+describe("dashboard guard v2 numeric authentication", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it.each(["/v2/chat/completions", "/api/v2/chat/completions"])(
+    "returns only 1001 for an unauthenticated %s request",
+    async (pathname) => {
+      const response = await proxy(request(pathname, { host: "router.example.com" }));
+      expect(response.status).toBe(401);
+      expect(await response.text()).toBe("1001");
+    },
+  );
+
+  it("does not bypass the v2 key gate for loopback requests", async () => {
+    const response = await proxy(localRequest("/v2/models", { host: "localhost:20128" }));
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe("1001");
+  });
+
+  it("passes a valid facade key to the route's per-key v2 gate", async () => {
+    mocks.validateApiKey.mockResolvedValue(true);
+    const response = await proxy(request("/v2/models", {
+      host: "router.example.com",
+      authorization: "Bearer sk-valid",
+    }));
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it("allows an unauthenticated CORS preflight", async () => {
+    const preflight = request("/v2/chat/completions", { host: "router.example.com" });
+    preflight.method = "OPTIONS";
+    expect(await proxy(preflight)).toBe(mocks.nextResponse);
+  });
+});
+
 describe("dashboard guard local-only access", () => {
   beforeEach(() => {
     vi.clearAllMocks();
