@@ -6,6 +6,70 @@ info:
 servers:
   - url: /
 paths:
+  /api/keys/{id}/v2-config:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Read a key's hidden V2 forwarding configuration
+      description: Admin-only response. The decrypted destination and credential are never included in generic key APIs and must not be cached.
+      security:
+        - dashboardSession: []
+      responses:
+        "200":
+          description: Decrypted configuration for the authenticated administrator.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-store, max-age=0
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [v2Proxy]
+                properties:
+                  v2Proxy:
+                    $ref: "#/components/schemas/V2AdminConfig"
+        "401":
+          description: An authenticated dashboard administrator session is required.
+        "404":
+          description: API key not found.
+    put:
+      summary: Replace a key's V2 forwarding configuration
+      description: Admin-only full replacement. The upstream API key is encrypted before persistence.
+      security:
+        - dashboardSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [v2Proxy]
+              properties:
+                v2Proxy:
+                  $ref: "#/components/schemas/V2AdminConfigInput"
+      responses:
+        "200":
+          description: Updated decrypted configuration for the authenticated administrator.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [v2Proxy]
+                properties:
+                  v2Proxy:
+                    $ref: "#/components/schemas/V2AdminConfig"
+        "400":
+          description: Invalid V2 forwarding configuration.
+        "401":
+          description: An authenticated dashboard administrator session is required.
+        "404":
+          description: API key not found.
   /v2/chat/completions:
     post:
       summary: Forward an OpenAI-compatible chat completion
@@ -50,6 +114,35 @@ components:
       type: http
       scheme: bearer
       bearerFormat: 9Router API key
+    dashboardSession:
+      type: apiKey
+      in: cookie
+      name: auth_token
+  schemas:
+    V2AdminConfigInput:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        upstreamBaseUrl:
+          type: string
+          format: uri
+          nullable: true
+        upstreamApiKey:
+          type: string
+          nullable: true
+          format: password
+    V2AdminConfig:
+      allOf:
+        - $ref: "#/components/schemas/V2AdminConfigInput"
+        - type: object
+          required: [configured, credentialReadable]
+          properties:
+            configured:
+              type: boolean
+            credentialReadable:
+              type: boolean
   responses:
     NumericError:
       description: Numeric-only error. No upstream details are returned.

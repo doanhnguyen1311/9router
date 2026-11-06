@@ -51,7 +51,9 @@ export {
 
 // API keys
 export {
-  getApiKeys, getApiKeyById, getApiKeyByKey, getV2ProxyConfigByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeys, getApiKeyById, getApiKeyByKey, getV2ProxyConfigByKey,
+  getV2ProxyAdminConfigById, updateV2ProxyAdminConfigById,
+  createApiKey, updateApiKey, deleteApiKey, validateApiKey,
   admitApiKeyRequest, resetApiKeyUsage,
 } from "./repos/apiKeysRepo.js";
 

@@ -22,6 +22,13 @@ describe("API key visibility guidance source verification", () => {
     expect(source).toContain("onClick={() => copy(key.key, key.id)}");
   });
 
+  it("loads hidden V2 credentials only from the admin configuration modal", () => {
+    expect(source).toContain("handleOpenV2Config(key)");
+    expect(source).toContain("/v2-config`");
+    expect(source).toContain("Show upstream key");
+    expect(source).toContain("handleSaveV2Config");
+  });
+
   it.each(["fa", "id", "km", "pt-BR", "th", "zh-CN"])(
     "updates the existing %s translation without retaining the one-time claim",
     (locale) => {

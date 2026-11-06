@@ -36,6 +36,16 @@ export default function APIPageClient({ machineId }) {
   const [newKeyV2Endpoint, setNewKeyV2Endpoint] = useState("");
   const [newKeyV2ApiKey, setNewKeyV2ApiKey] = useState("");
   const [newKeyError, setNewKeyError] = useState("");
+  const [v2ConfigKey, setV2ConfigKey] = useState(null);
+  const [v2ConfigEnabled, setV2ConfigEnabled] = useState(false);
+  const [v2ConfigEndpoint, setV2ConfigEndpoint] = useState("");
+  const [v2ConfigApiKey, setV2ConfigApiKey] = useState("");
+  const [v2ConfigApiKeyVisible, setV2ConfigApiKeyVisible] = useState(false);
+  const [v2ConfigLoading, setV2ConfigLoading] = useState(false);
+  const [v2ConfigLoaded, setV2ConfigLoaded] = useState(false);
+  const [v2ConfigSaving, setV2ConfigSaving] = useState(false);
+  const [v2ConfigError, setV2ConfigError] = useState("");
+  const v2ConfigLoadRef = useRef(null);
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
 
@@ -729,6 +739,101 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
+  const resetV2ConfigModal = () => {
+    v2ConfigLoadRef.current?.abort();
+    v2ConfigLoadRef.current = null;
+    setV2ConfigKey(null);
+    setV2ConfigEnabled(false);
+    setV2ConfigEndpoint("");
+    setV2ConfigApiKey("");
+    setV2ConfigApiKeyVisible(false);
+    setV2ConfigLoading(false);
+    setV2ConfigLoaded(false);
+    setV2ConfigSaving(false);
+    setV2ConfigError("");
+  };
+
+  const handleOpenV2Config = async (key) => {
+    v2ConfigLoadRef.current?.abort();
+    const controller = new AbortController();
+    v2ConfigLoadRef.current = controller;
+    setV2ConfigKey(key);
+    setV2ConfigEnabled(false);
+    setV2ConfigEndpoint("");
+    setV2ConfigApiKey("");
+    setV2ConfigApiKeyVisible(false);
+    setV2ConfigError("");
+    setV2ConfigLoaded(false);
+    setV2ConfigLoading(true);
+
+    try {
+      const res = await fetch(`/api/keys/${encodeURIComponent(key.id)}/v2-config`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (controller.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || "Failed to load V2 configuration");
+
+      const config = data.v2Proxy || {};
+      setV2ConfigEnabled(config.enabled === true);
+      setV2ConfigEndpoint(config.upstreamBaseUrl || "");
+      setV2ConfigApiKey(config.upstreamApiKey || "");
+      setV2ConfigLoaded(true);
+      if (config.enabled && config.credentialReadable === false) {
+        setV2ConfigError("The saved upstream credential cannot be read. Enter a replacement and save.");
+      }
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setV2ConfigError(error.message || "Failed to load V2 configuration");
+    } finally {
+      if (v2ConfigLoadRef.current === controller) {
+        v2ConfigLoadRef.current = null;
+        setV2ConfigLoading(false);
+      }
+    }
+  };
+
+  const handleSaveV2Config = async () => {
+    if (!v2ConfigKey || !v2ConfigLoaded) return;
+    if (v2ConfigEnabled && (!v2ConfigEndpoint.trim() || !v2ConfigApiKey.trim())) {
+      setV2ConfigError("Upstream endpoint and API key are required while V2 is enabled.");
+      return;
+    }
+
+    setV2ConfigSaving(true);
+    setV2ConfigError("");
+    try {
+      const res = await fetch(`/api/keys/${encodeURIComponent(v2ConfigKey.id)}/v2-config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          v2Proxy: {
+            enabled: v2ConfigEnabled,
+            upstreamBaseUrl: v2ConfigEnabled ? v2ConfigEndpoint : undefined,
+            upstreamApiKey: v2ConfigEnabled ? v2ConfigApiKey : undefined,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save V2 configuration");
+
+      setKeys((current) => current.map((key) => key.id === v2ConfigKey.id
+        ? {
+          ...key,
+          v2Proxy: {
+            enabled: data.v2Proxy?.enabled === true,
+            configured: data.v2Proxy?.configured === true,
+          },
+        }
+        : key));
+      resetV2ConfigModal();
+    } catch (error) {
+      setV2ConfigError(error.message || "Failed to save V2 configuration");
+      setV2ConfigSaving(false);
+    }
+  };
+
   const handleDeleteKey = async (id) => {
     setConfirmState({
       title: "Delete API Key",
@@ -1241,6 +1346,14 @@ export default function APIPageClient({ machineId }) {
                   {key.v2Proxy?.enabled && (
                     <p className="text-xs text-primary mt-1">V2 forwarding enabled</p>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => handleOpenV2Config(key)}
+                    className="mt-2 inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-primary/50 hover:text-primary"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">settings</span>
+                    {key.v2Proxy?.enabled ? "V2 Config" : "Configure V2"}
+                  </button>
                   <KeyUsageAccessControls
                     apiKey={key}
                     onChange={(updates) => handleUpdateKeyUsageAccess(key.id, updates)}
@@ -1389,6 +1502,107 @@ export default function APIPageClient({ machineId }) {
               Cancel
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Admin-only V2 forwarding configuration */}
+      <Modal
+        isOpen={!!v2ConfigKey}
+        title={`V2 Forwarding Config${v2ConfigKey?.name ? ` — ${v2ConfigKey.name}` : ""}`}
+        onClose={() => {
+          if (!v2ConfigSaving) resetV2ConfigModal();
+        }}
+      >
+        <div className="flex flex-col gap-4">
+          {v2ConfigLoading ? (
+            <div className="py-8 text-center text-sm text-text-muted">Loading configuration...</div>
+          ) : !v2ConfigLoaded ? (
+            <div className="flex flex-col gap-4">
+              <p className="text-sm text-red-500">
+                {v2ConfigError || "Failed to load V2 configuration"}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => handleOpenV2Config(v2ConfigKey)}
+                  fullWidth
+                >
+                  Retry
+                </Button>
+                <Button onClick={resetV2ConfigModal} variant="ghost" fullWidth>
+                  Close
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="rounded-lg border border-border p-3">
+                <Toggle
+                  checked={v2ConfigEnabled}
+                  onChange={(enabled) => {
+                    setV2ConfigEnabled(enabled);
+                    setV2ConfigError("");
+                  }}
+                  label="Allow this key to use v2"
+                  description="Forward /v2 requests to the hidden upstream endpoint"
+                />
+              </div>
+
+              {v2ConfigEnabled && (
+                <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface-2/40 p-3">
+                  <Input
+                    label="Upstream v1 endpoint"
+                    type="url"
+                    value={v2ConfigEndpoint}
+                    onChange={(e) => setV2ConfigEndpoint(e.target.value)}
+                    placeholder="https://provider.example/v1"
+                    hint="Visible only to an authenticated Admin. HTTPS public base URL only."
+                    required
+                    autoComplete="off"
+                  />
+                  <Input
+                    label="Upstream API key"
+                    type={v2ConfigApiKeyVisible ? "text" : "password"}
+                    value={v2ConfigApiKey}
+                    onChange={(e) => setV2ConfigApiKey(e.target.value)}
+                    placeholder="Upstream credential"
+                    hint="Decrypted only for this Admin view and encrypted again when saved."
+                    required
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setV2ConfigApiKeyVisible((visible) => !visible)}
+                    className="self-end inline-flex items-center gap-1 text-xs text-text-muted transition-colors hover:text-primary"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">
+                      {v2ConfigApiKeyVisible ? "visibility_off" : "visibility"}
+                    </span>
+                    {v2ConfigApiKeyVisible ? "Hide upstream key" : "Show upstream key"}
+                  </button>
+                </div>
+              )}
+
+              {v2ConfigError && <p className="text-sm text-red-500">{v2ConfigError}</p>}
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleSaveV2Config}
+                  fullWidth
+                  loading={v2ConfigSaving}
+                  disabled={v2ConfigSaving || (v2ConfigEnabled && (!v2ConfigEndpoint.trim() || !v2ConfigApiKey.trim()))}
+                >
+                  Save
+                </Button>
+                <Button
+                  onClick={resetV2ConfigModal}
+                  variant="ghost"
+                  fullWidth
+                  disabled={v2ConfigSaving}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       </Modal>
 

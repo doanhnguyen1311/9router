@@ -202,6 +202,78 @@ export async function getV2ProxyConfigByKey(key) {
   };
 }
 
+// Admin-only repository lookup. Callers must enforce an authenticated dashboard
+// session before returning this plaintext configuration. Keeping this separate
+// from rowToKey() prevents generic key-list and key-detail responses from ever
+// materializing the hidden destination or credential.
+export async function getV2ProxyAdminConfigById(id) {
+  if (!id) return null;
+  const db = await getAdapter();
+  const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
+  if (!row) return null;
+
+  const enabled = row.v2Enabled === 1 || row.v2Enabled === true;
+  const upstreamApiKey = enabled
+    ? decryptV2UpstreamApiKey(row.v2UpstreamApiKeyEncrypted, row.machineId)
+    : null;
+  const upstreamBaseUrl = enabled && typeof row.v2UpstreamBaseUrl === "string"
+    ? row.v2UpstreamBaseUrl
+    : null;
+
+  return {
+    enabled,
+    upstreamBaseUrl,
+    upstreamApiKey,
+    configured: enabled && !!upstreamBaseUrl && !!upstreamApiKey,
+    credentialReadable: !enabled || !!upstreamApiKey,
+  };
+}
+
+export async function updateV2ProxyAdminConfigById(id, input) {
+  const checked = validateV2ProxyInput(input);
+  if (!checked.ok) {
+    const error = new Error(checked.error);
+    error.code = "INVALID_V2_PROXY_CONFIG";
+    throw error;
+  }
+
+  const db = await getAdapter();
+  const config = checked.value;
+  let result = null;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
+    if (!row) return;
+
+    const encryptedUpstreamApiKey = config.enabled
+      ? encryptV2UpstreamApiKey(config.upstreamApiKey, row.machineId)
+      : null;
+    db.run(
+      `UPDATE apiKeys SET
+        v2Enabled = ?,
+        v2UpstreamBaseUrl = ?,
+        v2UpstreamApiKeyEncrypted = ?
+       WHERE id = ?`,
+      [
+        config.enabled ? 1 : 0,
+        config.enabled ? config.upstreamBaseUrl : null,
+        encryptedUpstreamApiKey,
+        id,
+      ],
+    );
+
+    result = {
+      enabled: config.enabled,
+      upstreamBaseUrl: config.enabled ? config.upstreamBaseUrl : null,
+      upstreamApiKey: config.enabled ? config.upstreamApiKey : null,
+      configured: config.enabled,
+      credentialReadable: true,
+    };
+  });
+
+  if (result) notifyApiKeysChanged();
+  return result;
+}
+
 export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED, v2ProxyInput = undefined) {
   if (!machineId) throw new Error("machineId is required");
   const checkedV2Proxy = validateV2ProxyInput(v2ProxyInput);

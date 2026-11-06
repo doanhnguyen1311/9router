@@ -75,6 +75,49 @@ describe("v2 proxy API-key persistence", () => {
       .toBe("backup-upstream-secret");
   });
 
+  it("lets the admin read, replace, and disable the encrypted v2 configuration", async () => {
+    const { database, adapter } = await boot();
+    const created = await database.createApiKey("Admin managed", "machine-admin", undefined, {
+      enabled: true,
+      upstreamBaseUrl: "https://old-upstream.example/v1",
+      upstreamApiKey: "old-upstream-secret",
+    });
+
+    expect(await database.getV2ProxyAdminConfigById(created.id)).toEqual({
+      enabled: true,
+      upstreamBaseUrl: "https://old-upstream.example/v1",
+      upstreamApiKey: "old-upstream-secret",
+      configured: true,
+      credentialReadable: true,
+    });
+
+    const updated = await database.updateV2ProxyAdminConfigById(created.id, {
+      enabled: true,
+      upstreamBaseUrl: "https://new-upstream.example/v1/",
+      upstreamApiKey: "new-upstream-secret",
+    });
+    expect(updated).toMatchObject({
+      enabled: true,
+      upstreamBaseUrl: "https://new-upstream.example/v1",
+      upstreamApiKey: "new-upstream-secret",
+      configured: true,
+    });
+
+    const raw = adapter.get("SELECT * FROM apiKeys WHERE id = ?", [created.id]);
+    expect(raw.v2UpstreamBaseUrl).toBe("https://new-upstream.example/v1");
+    expect(raw.v2UpstreamApiKeyEncrypted).toMatch(/^v2e1\./);
+    expect(raw.v2UpstreamApiKeyEncrypted).not.toContain("new-upstream-secret");
+    expect((await database.getV2ProxyConfigByKey(created.key)).config.upstreamApiKey)
+      .toBe("new-upstream-secret");
+
+    expect(await database.updateV2ProxyAdminConfigById(created.id, { enabled: false }))
+      .toMatchObject({ enabled: false, upstreamBaseUrl: null, upstreamApiKey: null });
+    const disabledRaw = adapter.get("SELECT * FROM apiKeys WHERE id = ?", [created.id]);
+    expect(disabledRaw.v2Enabled).toBe(0);
+    expect(disabledRaw.v2UpstreamBaseUrl).toBeNull();
+    expect(disabledRaw.v2UpstreamApiKeyEncrypted).toBeNull();
+  });
+
   it("adds disabled v2 columns to an existing database without losing rows", async () => {
     fs.mkdirSync(path.join(tempDir, "db"), { recursive: true });
     const sqlite = new DatabaseSync(path.join(tempDir, "db", "data.sqlite"));
