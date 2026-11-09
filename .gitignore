@@ -55,6 +55,8 @@ docs/*
 !docs/chat-history/**
 !docs/key-effort/
 !docs/key-effort/**
+!docs/project-memory/
+!docs/project-memory/**
 test/*
 open-sse/test/*
 RM.vn.md

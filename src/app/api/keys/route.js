@@ -3,6 +3,7 @@ import { getApiKeys, createApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { validateKeyQuotaInput } from "@/shared/utils/keyQuota.js";
 import { validateV2ProxyInput } from "@/lib/v2ProxyConfig.js";
+import { getProjectIdentity } from "@/lib/projectMemory/identity.js";
 
 export const dynamic = "force-dynamic";
 
@@ -42,7 +43,8 @@ export async function POST(request) {
 
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
-    const apiKey = await createApiKey(name, machineId, checkedQuota?.value, checkedV2Proxy.value);
+    const identity = await getProjectIdentity(request);
+    const apiKey = await createApiKey(name, machineId, checkedQuota?.value, checkedV2Proxy.value, identity?.principalId);
 
     return NextResponse.json({
       key: apiKey.key,
@@ -51,6 +53,7 @@ export async function POST(request) {
       machineId: apiKey.machineId,
       allowKeyUsage: apiKey.allowKeyUsage,
       allowKeyUsageModelList: apiKey.allowKeyUsageModelList,
+      projectAccess: apiKey.projectAccess,
       v2Proxy: apiKey.v2Proxy,
       quota: apiKey.quota,
       usage: apiKey.usage,

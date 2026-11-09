@@ -27,6 +27,7 @@ import {
   v2ProxySummaryFromRow,
   validateV2ProxyInput,
 } from "@/lib/v2ProxyConfig.js";
+import { hashApiKey, protectApiKey, revealApiKey } from "@/lib/apiKeyStorage.js";
 
 function quotaFromRow(row) {
   return keyQuotaFromColumns(
@@ -46,7 +47,7 @@ function rowToKey(row) {
   const quota = quotaFromRow(row);
   return {
     id: row.id,
-    key: row.key,
+    key: revealApiKey(row),
     name: row.name,
     machineId: row.machineId,
     isActive: row.isActive === 1 || row.isActive === true,
@@ -61,6 +62,9 @@ function rowToKey(row) {
     effortPolicy: keyEffortFromColumn(row.effortPolicy),
     allowKeyUsage: row.allowKeyUsage !== 0 && row.allowKeyUsage !== false,
     allowKeyUsageModelList: row.allowKeyUsageModelList !== 0 && row.allowKeyUsageModelList !== false,
+    ownerId: row.ownerId || "local-admin",
+    projectAccess: row.projectAccess !== 0 && row.projectAccess !== false,
+    assignedProjectId: row.assignedProjectId || null,
     v2Proxy: v2ProxySummaryFromRow(row),
     quota,
     isExpired: isKeyQuotaExpired(quota),
@@ -113,7 +117,7 @@ function applyDueQuotaReset(db, row, now = new Date()) {
 // If a response finishes after a scheduled boundary, its token/cost usage is
 // charged to the new window rather than resurrecting counters from the old one.
 export function recordApiKeyTokenCost(db, key, inputTokens, cost, now = new Date()) {
-  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  const row = db.get(`SELECT * FROM apiKeys WHERE keyHash = ? OR key = ?`, [hashApiKey(key), key]);
   if (!row) return false;
   const applied = applyDueQuotaReset(db, row, now);
   db.run(
@@ -170,8 +174,13 @@ export async function getApiKeyByKey(key) {
   let row = null;
   let changed = false;
   db.transaction(() => {
-    const applied = applyDueQuotaReset(db, db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]));
-    row = applied.row;
+    const joined = db.get(
+      `SELECT k.*, pak.projectId AS assignedProjectId
+       FROM apiKeys k LEFT JOIN projectApiKeys pak ON pak.apiKeyId=k.id WHERE k.keyHash = ? OR k.key = ?`,
+      [hashApiKey(key), key],
+    );
+    const applied = applyDueQuotaReset(db, joined);
+    row = applied.row ? { ...applied.row, assignedProjectId: joined?.assignedProjectId || null } : null;
     changed = applied.changed;
   });
   if (changed) notifyApiKeysChanged();
@@ -184,7 +193,7 @@ export async function getApiKeyByKey(key) {
 export async function getV2ProxyConfigByKey(key) {
   if (!key) return null;
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  const row = db.get(`SELECT * FROM apiKeys WHERE keyHash = ? OR key = ?`, [hashApiKey(key), key]);
   if (!row) return null;
   const record = rowToKey(row);
   if (!record.v2Proxy.enabled) return { record, config: null, invalid: false };
@@ -274,7 +283,7 @@ export async function updateV2ProxyAdminConfigById(id, input) {
   return result;
 }
 
-export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED, v2ProxyInput = undefined) {
+export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED, v2ProxyInput = undefined, ownerId = "local-admin") {
   if (!machineId) throw new Error("machineId is required");
   const checkedV2Proxy = validateV2ProxyInput(v2ProxyInput);
   if (!checkedV2Proxy.ok) {
@@ -312,6 +321,8 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED,
     effortPolicy: { ...KEY_EFFORT_DEFAULT, overrides: [] },
     allowKeyUsage: true,
     allowKeyUsageModelList: true,
+    ownerId: typeof ownerId === "string" && ownerId.trim() ? ownerId.trim() : "local-admin",
+    projectAccess: true,
     v2Proxy: { enabled: v2Proxy.enabled, configured: v2Proxy.enabled },
     quota: normalizedQuota,
     isExpired: isKeyQuotaExpired(normalizedQuota),
@@ -331,18 +342,21 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED,
     },
   };
   const cols = keyAccessToColumns(KEY_ACCESS_UNRESTRICTED);
+  const protectedKey = protectApiKey(apiKey.key, apiKey.machineId);
   db.run(
     `INSERT INTO apiKeys(
-      id, key, name, machineId, isActive, createdAt,
+      id, key, keyHash, keyEncrypted, name, machineId, isActive, createdAt,
       accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
       modelAlias, selectedModel,
       v2Enabled, v2UpstreamBaseUrl, v2UpstreamApiKeyEncrypted,
       quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
       quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
-      quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)`,
+      quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests,
+      ownerId, projectAccess
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 1)`,
     [
-      apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
+      apiKey.id, protectedKey.storageKey, protectedKey.keyHash, protectedKey.keyEncrypted,
+      apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
       cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
       null, null,
       v2Proxy.enabled ? 1 : 0, v2Proxy.upstreamBaseUrl, encryptedUpstreamApiKey,
@@ -351,6 +365,7 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED,
       quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
       quotaCols.quotaExpiresAt,
       apiKey.usage.nextResetAt,
+      apiKey.ownerId,
     ]
   );
   notifyApiKeysChanged();
@@ -376,7 +391,7 @@ export async function updateApiKey(id, data, options = {}) {
         throw error;
       }
     }
-    for (const field of ["allowKeyUsage", "allowKeyUsageModelList"]) {
+    for (const field of ["allowKeyUsage", "allowKeyUsageModelList", "projectAccess"]) {
       if (data[field] !== undefined && typeof data[field] !== "boolean") {
         const error = new Error(`${field} must be a boolean`);
         error.code = "INVALID_KEY_USAGE_ACCESS";
@@ -437,22 +452,38 @@ export async function updateApiKey(id, data, options = {}) {
         )
         : current.usage.nextResetAt)
       : null;
+    const machineChanged = merged.machineId !== row.machineId;
+    let protectedKey = null;
+    let rewrappedV2Key = row.v2UpstreamApiKeyEncrypted;
+    if (machineChanged) {
+      if (!current.key) throw new Error("API key credential cannot be rewrapped");
+      protectedKey = protectApiKey(current.key, merged.machineId);
+      if (row.v2UpstreamApiKeyEncrypted) {
+        const upstreamKey = decryptV2UpstreamApiKey(row.v2UpstreamApiKeyEncrypted, row.machineId);
+        if (!upstreamKey) throw new Error("V2 upstream credential cannot be rewrapped");
+        rewrappedV2Key = encryptV2UpstreamApiKey(upstreamKey, merged.machineId);
+      }
+    }
     db.run(
       `UPDATE apiKeys SET
-        key = ?, name = ?, machineId = ?, isActive = ?,
+        name = ?, machineId = ?, isActive = ?, key = COALESCE(?, key), keyHash = COALESCE(?, keyHash),
+        keyEncrypted = COALESCE(?, keyEncrypted), v2UpstreamApiKeyEncrypted = ?,
         accessRestricted = ?, accessAllow = ?, accessAccountRestricted = ?, accessAccountIds = ?,
         modelAlias = ?, selectedModel = ?, effortPolicy = ?,
         allowKeyUsage = ?, allowKeyUsageModelList = ?,
+        projectAccess = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
         quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
        WHERE id = ?`,
       [
-        merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0,
+        merged.name, merged.machineId, merged.isActive ? 1 : 0,
+        protectedKey?.storageKey || null, protectedKey?.keyHash || null, protectedKey?.keyEncrypted || null, rewrappedV2Key,
         cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
         routingCols.modelAlias, routingCols.selectedModel,
         JSON.stringify(merged.effortPolicy),
         merged.allowKeyUsage ? 1 : 0, merged.allowKeyUsageModelList ? 1 : 0,
+        merged.projectAccess ? 1 : 0,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
         quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
@@ -476,7 +507,7 @@ export async function deleteApiKey(id) {
 
 export async function validateApiKey(key) {
   const db = await getAdapter();
-  const row = db.get(`SELECT isActive, quotaExpiresAt FROM apiKeys WHERE key = ?`, [key]);
+  const row = db.get(`SELECT isActive, quotaExpiresAt FROM apiKeys WHERE keyHash = ? OR key = ?`, [hashApiKey(key), key]);
   if (!row) return false;
   const active = row.isActive === 1 || row.isActive === true;
   return active && !isKeyQuotaExpired({ expiresAt: row.quotaExpiresAt });
@@ -490,7 +521,7 @@ export async function admitApiKeyRequest(key) {
   let result = { tracked: false, allowed: true };
 
   db.transaction(() => {
-    let row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+    let row = db.get(`SELECT * FROM apiKeys WHERE keyHash = ? OR key = ?`, [hashApiKey(key), key]);
     if (!row) return;
 
     const applied = applyDueQuotaReset(db, row);

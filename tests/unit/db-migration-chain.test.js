@@ -77,7 +77,11 @@ describe("Schema migrations", () => {
 
     const keys = db.all(`SELECT * FROM apiKeys`);
     expect(keys).toHaveLength(1);
-    expect(keys[0].key).toBe("abc");
+    expect(keys[0].key).not.toBe("abc");
+    expect(keys[0].keyHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(keys[0].keyEncrypted).not.toContain("abc");
+    const { getApiKeyByKey } = await import("@/lib/db/index.js");
+    expect(await getApiKeyByKey("abc")).toMatchObject({ id: "k1", key: "abc" });
 
     const aliases = db.all(`SELECT * FROM kv WHERE scope='modelAliases'`);
     expect(aliases).toHaveLength(1);

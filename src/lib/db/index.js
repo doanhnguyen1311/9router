@@ -23,6 +23,8 @@ import {
   isEncryptedV2UpstreamApiKey,
   normalizeV2UpstreamBaseUrl,
 } from "@/lib/v2ProxyConfig.js";
+import { isProtectedApiKeyRow, protectApiKey } from "@/lib/apiKeyStorage.js";
+import { upsertSearchDocumentInTransaction } from "@/lib/projectMemory/searchIndex.js";
 
 // Settings
 export {
@@ -105,6 +107,8 @@ export async function exportDb() {
     apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({
       id: r.id,
       key: r.key,
+      keyHash: r.keyHash || null,
+      keyEncrypted: r.keyEncrypted || null,
       name: r.name,
       machineId: r.machineId,
       isActive: r.isActive === 1,
@@ -119,6 +123,8 @@ export async function exportDb() {
       effortPolicy: keyEffortFromColumn(r.effortPolicy),
       allowKeyUsage: r.allowKeyUsage !== 0 && r.allowKeyUsage !== false,
       allowKeyUsageModelList: r.allowKeyUsageModelList !== 0 && r.allowKeyUsageModelList !== false,
+      ownerId: r.ownerId || "local-admin",
+      projectAccess: r.projectAccess !== 0 && r.projectAccess !== false,
       v2Proxy: {
         enabled: r.v2Enabled === 1 || r.v2Enabled === true,
         upstreamBaseUrl: r.v2UpstreamBaseUrl || null,
@@ -149,6 +155,26 @@ export async function exportDb() {
     customModels: [],
     mitmAlias: {},
     pricing: {},
+    projectMemory: {
+      projectSystemSettings: db.all(`SELECT * FROM projectSystemSettings`),
+      projectPermissions: db.all(`SELECT * FROM projectPermissions`),
+      projects: db.all(`SELECT * FROM projects`),
+      projectMembers: db.all(`SELECT * FROM projectMembers`),
+      projectApiKeys: db.all(`SELECT * FROM projectApiKeys`),
+      projectSettings: db.all(`SELECT * FROM projectSettings`),
+      projectSessions: db.all(`SELECT * FROM projectSessions`),
+      memoryEvents: db.all(`SELECT * FROM memoryEvents`),
+      extractionJobs: db.all(`SELECT * FROM extractionJobs`),
+      memoryItems: db.all(`SELECT * FROM memoryItems`),
+      memoryItemHistory: db.all(`SELECT * FROM memoryItemHistory`),
+      memoryEntities: db.all(`SELECT * FROM memoryEntities`),
+      memoryRelations: db.all(`SELECT * FROM memoryRelations`),
+      projectFiles: db.all(`SELECT * FROM projectFiles`),
+      projectSymbols: db.all(`SELECT * FROM projectSymbols`),
+      projectFileDependencies: db.all(`SELECT * FROM projectFileDependencies`),
+      contextSnapshots: db.all(`SELECT * FROM contextSnapshots`),
+      memoryUsage: db.all(`SELECT * FROM memoryUsage`),
+    },
   };
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
@@ -165,7 +191,30 @@ export async function importDb(payload) {
   }
   const db = await getAdapter();
 
+  function insertRawRows(table, rows) {
+    if (!Array.isArray(rows) || !rows.length) return;
+    const allowed = new Set(db.all(`PRAGMA table_info(${table})`).map((column) => column.name));
+    for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+      const columns = Object.keys(row).filter((column) => allowed.has(column));
+      if (!columns.length) continue;
+      db.run(
+        `INSERT OR REPLACE INTO ${table}(${columns.join(",")}) VALUES(${columns.map(() => "?").join(",")})`,
+        columns.map((column) => row[column]),
+      );
+    }
+  }
+
   db.transaction(() => {
+    const projectDump = payload.projectMemory && typeof payload.projectMemory === "object" && !Array.isArray(payload.projectMemory)
+      ? payload.projectMemory
+      : null;
+    if (projectDump) {
+      // One root delete cascades every project-owned row and API-key mapping.
+      db.run(`DELETE FROM projects`);
+      db.run(`DELETE FROM projectPermissions`);
+      db.run(`DELETE FROM projectSystemSettings`);
+    }
     // Wipe all tables (keep _meta)
     db.run(`DELETE FROM settings`);
     db.run(`DELETE FROM providerConnections`);
@@ -224,6 +273,12 @@ export async function importDb(payload) {
       if (typeof allowKeyUsage !== "boolean" || typeof allowKeyUsageModelList !== "boolean") {
         throw new Error(`apiKeys ${k.id}: Key Usage access values must be booleans`);
       }
+      const ownerId = typeof k.ownerId === "string" && k.ownerId.trim() ? k.ownerId.trim() : "local-admin";
+      const projectAccess = k.projectAccess === undefined ? true : k.projectAccess;
+      if (typeof projectAccess !== "boolean") throw new Error(`apiKeys ${k.id}: projectAccess must be boolean`);
+      const protectedKey = isProtectedApiKeyRow(k)
+        ? { storageKey: k.key, keyHash: k.keyHash, keyEncrypted: k.keyEncrypted }
+        : protectApiKey(k.key, k.machineId);
       let v2Enabled = false;
       let v2UpstreamBaseUrl = null;
       let v2UpstreamApiKeyEncrypted = null;
@@ -285,16 +340,18 @@ export async function importDb(payload) {
         : null;
       db.run(
         `INSERT OR REPLACE INTO apiKeys(
-          id, key, name, machineId, isActive, createdAt,
+          id, key, keyHash, keyEncrypted, name, machineId, isActive, createdAt,
           accessRestricted, accessAllow, accessAccountRestricted, accessAccountIds,
           modelAlias, selectedModel, effortPolicy, allowKeyUsage, allowKeyUsageModelList,
           v2Enabled, v2UpstreamBaseUrl, v2UpstreamApiKeyEncrypted,
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
           quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          , ownerId, projectAccess
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
+          k.id, protectedKey.storageKey, protectedKey.keyHash, protectedKey.keyEncrypted,
+          k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
           k.createdAt || new Date().toISOString(),
           cols.accessRestricted, cols.accessAllow, cols.accessAccountRestricted, cols.accessAccountIds,
           routingCols.modelAlias, routingCols.selectedModel, JSON.stringify(effortPolicy),
@@ -305,6 +362,7 @@ export async function importDb(payload) {
           quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
           quotaCols.quotaExpiresAt, usageNextResetAt,
           usageCost, usageInputTokens, usageRequests, usageResetAt,
+          ownerId, projectAccess ? 1 : 0,
         ]
       );
     }
@@ -313,6 +371,38 @@ export async function importDb(payload) {
         `INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
         [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
       );
+    }
+    if (projectDump) {
+      // Dependency order mirrors the foreign-key graph. Restore happens inside
+      // the same transaction as API keys so assignments are never half-restored.
+      insertRawRows("projectSystemSettings", projectDump.projectSystemSettings);
+      insertRawRows("projectPermissions", projectDump.projectPermissions);
+      insertRawRows("projects", projectDump.projects);
+      insertRawRows("projectMembers", projectDump.projectMembers);
+      insertRawRows("projectSettings", projectDump.projectSettings);
+      insertRawRows("projectApiKeys", projectDump.projectApiKeys);
+      insertRawRows("projectSessions", projectDump.projectSessions);
+      insertRawRows("memoryEvents", projectDump.memoryEvents);
+      insertRawRows("extractionJobs", projectDump.extractionJobs);
+      insertRawRows("memoryItems", projectDump.memoryItems);
+      insertRawRows("memoryItemHistory", projectDump.memoryItemHistory);
+      insertRawRows("memoryEntities", projectDump.memoryEntities);
+      insertRawRows("memoryRelations", projectDump.memoryRelations);
+      insertRawRows("projectFiles", projectDump.projectFiles);
+      insertRawRows("projectSymbols", projectDump.projectSymbols);
+      insertRawRows("projectFileDependencies", projectDump.projectFileDependencies);
+      insertRawRows("contextSnapshots", projectDump.contextSnapshots);
+      insertRawRows("memoryUsage", projectDump.memoryUsage);
+      for (const row of db.all("SELECT projectId, id, subject, value FROM memoryItems")) {
+        upsertSearchDocumentInTransaction(db, { projectId: row.projectId, kind: "memory", refId: row.id, title: row.subject, body: row.value });
+      }
+      for (const row of db.all("SELECT projectId, id, relativePath, redactedContent FROM projectFiles")) {
+        upsertSearchDocumentInTransaction(db, { projectId: row.projectId, kind: "file", refId: row.id, title: row.relativePath, body: row.redactedContent || "" });
+      }
+      if (!db.get(`SELECT id FROM projectSystemSettings WHERE id=1`)) {
+        const now = new Date().toISOString();
+        db.run(`INSERT INTO projectSystemSettings(id, enabled, defaultUserAccess, extractionEnabled, retrievalEnabled, fileIndexingEnabled, maxProjectsPerUser, maxFilesPerProject, maxProjectBytes, maxFileBytes, updatedAt) VALUES(1,1,1,1,1,1,50,5000,268435456,10485760,?)`, [now]);
+      }
     }
     for (const [a, m] of Object.entries(payload.modelAliases || {})) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [a, stringifyJson(m)]);

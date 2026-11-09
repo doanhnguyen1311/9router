@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -13,6 +13,7 @@ PRAGMA mmap_size = 30000000;
 PRAGMA cache_size = -64000;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
+PRAGMA secure_delete = ON;
 `;
 
 // Declarative current schema. Used by syncSchemaFromTables() to
@@ -79,6 +80,8 @@ export const TABLES = {
     columns: {
       id: "TEXT PRIMARY KEY",
       key: "TEXT UNIQUE NOT NULL",
+      keyHash: "TEXT",
+      keyEncrypted: "TEXT",
       name: "TEXT",
       machineId: "TEXT",
       isActive: "INTEGER DEFAULT 1",
@@ -118,11 +121,334 @@ export const TABLES = {
       quotaUsedInputTokens: "INTEGER DEFAULT 0",
       quotaUsedRequests: "INTEGER DEFAULT 0",
       quotaUsageResetAt: "TEXT",
+      // Project Memory is opt-in. ownerId backfills the current single-admin
+      // installation model while remaining compatible with OIDC/SAML users.
+      ownerId: "TEXT DEFAULT 'local-admin'",
+      projectAccess: "INTEGER NOT NULL DEFAULT 1",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_ak_key_hash ON apiKeys(keyHash) WHERE keyHash IS NOT NULL",
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_ak_model_alias_unique ON apiKeys(modelAlias COLLATE NOCASE) WHERE modelAlias IS NOT NULL AND modelAlias <> ''",
     ],
+  },
+  projectSystemSettings: {
+    columns: {
+      id: "INTEGER PRIMARY KEY CHECK (id = 1)",
+      enabled: "INTEGER NOT NULL DEFAULT 1",
+      defaultUserAccess: "INTEGER NOT NULL DEFAULT 1",
+      extractionEnabled: "INTEGER NOT NULL DEFAULT 1",
+      retrievalEnabled: "INTEGER NOT NULL DEFAULT 1",
+      fileIndexingEnabled: "INTEGER NOT NULL DEFAULT 1",
+      maxProjectsPerUser: "INTEGER NOT NULL DEFAULT 50",
+      maxFilesPerProject: "INTEGER NOT NULL DEFAULT 5000",
+      maxProjectBytes: "INTEGER NOT NULL DEFAULT 268435456",
+      maxFileBytes: "INTEGER NOT NULL DEFAULT 10485760",
+      updatedAt: "TEXT NOT NULL",
+    },
+  },
+  projectPermissions: {
+    columns: {
+      principalId: "TEXT PRIMARY KEY",
+      enabled: "INTEGER NOT NULL DEFAULT 1",
+      updatedBy: "TEXT",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_project_permissions_enabled ON projectPermissions(enabled)"],
+  },
+  projects: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      ownerId: "TEXT NOT NULL",
+      name: "TEXT NOT NULL",
+      description: "TEXT NOT NULL DEFAULT ''",
+      status: "TEXT NOT NULL DEFAULT 'active'",
+      version: "INTEGER NOT NULL DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+      lastActivityAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(ownerId, updatedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status, updatedAt DESC)",
+    ],
+  },
+  projectMembers: {
+    columns: {
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      principalId: "TEXT NOT NULL",
+      role: "TEXT NOT NULL",
+      displayName: "TEXT",
+      status: "TEXT NOT NULL DEFAULT 'active'",
+      invitedBy: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    primaryKey: "PRIMARY KEY (projectId, principalId)",
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_project_members_principal ON projectMembers(principalId, status)",
+      "CREATE INDEX IF NOT EXISTS idx_project_members_project ON projectMembers(projectId, status)",
+    ],
+  },
+  projectApiKeys: {
+    columns: {
+      apiKeyId: "TEXT PRIMARY KEY REFERENCES apiKeys(id) ON DELETE CASCADE",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      assignedBy: "TEXT NOT NULL",
+      assignedAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_project_api_keys_project ON projectApiKeys(projectId)"],
+  },
+  projectSettings: {
+    columns: {
+      projectId: "TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE",
+      memoryEnabled: "INTEGER NOT NULL DEFAULT 1",
+      extractionEnabled: "INTEGER NOT NULL DEFAULT 1",
+      retrievalEnabled: "INTEGER NOT NULL DEFAULT 1",
+      fileIndexingEnabled: "INTEGER NOT NULL DEFAULT 1",
+      contextTokenBudget: "INTEGER NOT NULL DEFAULT 1800",
+      maxGraphDepth: "INTEGER NOT NULL DEFAULT 2",
+      retainSourceContent: "INTEGER NOT NULL DEFAULT 1",
+      ignoreRules: "TEXT NOT NULL DEFAULT '[]'",
+      updatedAt: "TEXT NOT NULL",
+    },
+  },
+  projectSessions: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      apiKeyId: "TEXT REFERENCES apiKeys(id) ON DELETE SET NULL",
+      clientNamespace: "TEXT NOT NULL",
+      clientSessionId: "TEXT NOT NULL",
+      provider: "TEXT",
+      accountId: "TEXT",
+      sessionVersion: "INTEGER NOT NULL DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      lastActivityAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_session_identity ON projectSessions(projectId, clientNamespace, clientSessionId)",
+      "CREATE INDEX IF NOT EXISTS idx_project_sessions_activity ON projectSessions(projectId, lastActivityAt DESC)",
+    ],
+  },
+  memoryEvents: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      sessionId: "TEXT REFERENCES projectSessions(id) ON DELETE SET NULL",
+      eventType: "TEXT NOT NULL",
+      sourceType: "TEXT NOT NULL",
+      payload: "TEXT NOT NULL",
+      evidenceHash: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+      processedAt: "TEXT",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_events_dedupe ON memoryEvents(projectId, evidenceHash, eventType)",
+      "CREATE INDEX IF NOT EXISTS idx_memory_events_project_time ON memoryEvents(projectId, createdAt DESC)",
+    ],
+  },
+  extractionJobs: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      eventId: "TEXT REFERENCES memoryEvents(id) ON DELETE CASCADE",
+      jobType: "TEXT NOT NULL DEFAULT 'memory-extraction'",
+      state: "TEXT NOT NULL DEFAULT 'pending'",
+      idempotencyKey: "TEXT NOT NULL UNIQUE",
+      payload: "TEXT NOT NULL",
+      attempts: "INTEGER NOT NULL DEFAULT 0",
+      maxAttempts: "INTEGER NOT NULL DEFAULT 5",
+      availableAt: "TEXT NOT NULL",
+      leaseOwner: "TEXT",
+      leaseUntil: "TEXT",
+      lastError: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+      completedAt: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_extraction_jobs_claim ON extractionJobs(state, availableAt, leaseUntil)",
+      "CREATE INDEX IF NOT EXISTS idx_extraction_jobs_project ON extractionJobs(projectId, createdAt DESC)",
+    ],
+  },
+  memoryItems: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      memoryType: "TEXT NOT NULL",
+      subject: "TEXT NOT NULL",
+      value: "TEXT NOT NULL",
+      structuredContent: "TEXT NOT NULL",
+      confidence: "REAL NOT NULL DEFAULT 0.5",
+      sourceType: "TEXT NOT NULL",
+      sourceSessionId: "TEXT REFERENCES projectSessions(id) ON DELETE SET NULL",
+      sourceEventId: "TEXT REFERENCES memoryEvents(id) ON DELETE SET NULL",
+      evidenceReference: "TEXT",
+      fingerprint: "TEXT NOT NULL",
+      version: "INTEGER NOT NULL DEFAULT 1",
+      status: "TEXT NOT NULL DEFAULT 'active'",
+      pinned: "INTEGER NOT NULL DEFAULT 0",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_fingerprint ON memoryItems(projectId, fingerprint)",
+      "CREATE INDEX IF NOT EXISTS idx_memory_items_lookup ON memoryItems(projectId, status, memoryType, updatedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_memory_items_subject ON memoryItems(projectId, subject)",
+    ],
+  },
+  memoryItemHistory: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      memoryId: "TEXT NOT NULL REFERENCES memoryItems(id) ON DELETE CASCADE",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      version: "INTEGER NOT NULL",
+      snapshot: "TEXT NOT NULL",
+      reason: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_memory_history_item ON memoryItemHistory(memoryId, version DESC)"],
+  },
+  memoryEntities: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      entityType: "TEXT NOT NULL",
+      name: "TEXT NOT NULL",
+      normalizedName: "TEXT NOT NULL",
+      metadata: "TEXT NOT NULL DEFAULT '{}'",
+      sourceType: "TEXT NOT NULL",
+      confidence: "REAL NOT NULL DEFAULT 0.5",
+      version: "INTEGER NOT NULL DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entities_name ON memoryEntities(projectId, entityType, normalizedName)",
+      "CREATE INDEX IF NOT EXISTS idx_memory_entities_search ON memoryEntities(projectId, normalizedName)",
+    ],
+  },
+  memoryRelations: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      fromEntityId: "TEXT NOT NULL REFERENCES memoryEntities(id) ON DELETE CASCADE",
+      toEntityId: "TEXT NOT NULL REFERENCES memoryEntities(id) ON DELETE CASCADE",
+      relationType: "TEXT NOT NULL",
+      evidenceType: "TEXT NOT NULL",
+      evidenceReference: "TEXT",
+      confidence: "REAL NOT NULL DEFAULT 0.5",
+      version: "INTEGER NOT NULL DEFAULT 1",
+      status: "TEXT NOT NULL DEFAULT 'active'",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_rel_unique ON memoryRelations(projectId, fromEntityId, toEntityId, relationType, evidenceType)",
+      "CREATE INDEX IF NOT EXISTS idx_memory_rel_from ON memoryRelations(projectId, fromEntityId, status)",
+      "CREATE INDEX IF NOT EXISTS idx_memory_rel_to ON memoryRelations(projectId, toEntityId, status)",
+    ],
+  },
+  projectFiles: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      relativePath: "TEXT NOT NULL",
+      fileName: "TEXT NOT NULL",
+      extension: "TEXT",
+      language: "TEXT",
+      contentHash: "TEXT NOT NULL",
+      fileSize: "INTEGER NOT NULL",
+      lastModified: "TEXT",
+      indexedAt: "TEXT",
+      indexingStatus: "TEXT NOT NULL DEFAULT 'pending'",
+      parserVersion: "TEXT",
+      redactedContent: "TEXT",
+      storagePath: "TEXT",
+      secretCount: "INTEGER NOT NULL DEFAULT 0",
+      error: "TEXT",
+      version: "INTEGER NOT NULL DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_files_path ON projectFiles(projectId, relativePath)",
+      "CREATE INDEX IF NOT EXISTS idx_project_files_status ON projectFiles(projectId, indexingStatus, updatedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_project_files_hash ON projectFiles(projectId, contentHash)",
+    ],
+  },
+  projectSymbols: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      fileId: "TEXT NOT NULL REFERENCES projectFiles(id) ON DELETE CASCADE",
+      symbolType: "TEXT NOT NULL",
+      name: "TEXT NOT NULL",
+      qualifiedName: "TEXT",
+      lineStart: "INTEGER",
+      lineEnd: "INTEGER",
+      signature: "TEXT",
+      metadata: "TEXT NOT NULL DEFAULT '{}'",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_project_symbols_name ON projectSymbols(projectId, name)",
+      "CREATE INDEX IF NOT EXISTS idx_project_symbols_file ON projectSymbols(fileId, lineStart)",
+    ],
+  },
+  projectFileDependencies: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      sourceFileId: "TEXT NOT NULL REFERENCES projectFiles(id) ON DELETE CASCADE",
+      targetFileId: "TEXT REFERENCES projectFiles(id) ON DELETE CASCADE",
+      targetReference: "TEXT NOT NULL",
+      relationType: "TEXT NOT NULL",
+      evidenceType: "TEXT NOT NULL",
+      evidenceReference: "TEXT",
+      confidence: "REAL NOT NULL DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_dep_unique ON projectFileDependencies(projectId, sourceFileId, targetReference, relationType)",
+      "CREATE INDEX IF NOT EXISTS idx_project_dep_source ON projectFileDependencies(projectId, sourceFileId)",
+      "CREATE INDEX IF NOT EXISTS idx_project_dep_target ON projectFileDependencies(projectId, targetFileId)",
+    ],
+  },
+  contextSnapshots: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      sessionId: "TEXT REFERENCES projectSessions(id) ON DELETE CASCADE",
+      snapshotType: "TEXT NOT NULL",
+      version: "INTEGER NOT NULL",
+      contentHash: "TEXT NOT NULL",
+      content: "TEXT NOT NULL",
+      tokenEstimate: "INTEGER NOT NULL DEFAULT 0",
+      status: "TEXT NOT NULL DEFAULT 'active'",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_context_snapshot_version ON contextSnapshots(projectId, sessionId, snapshotType, version)",
+      "CREATE INDEX IF NOT EXISTS idx_context_snapshot_hash ON contextSnapshots(projectId, contentHash)",
+    ],
+  },
+  memoryUsage: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      sessionId: "TEXT REFERENCES projectSessions(id) ON DELETE SET NULL",
+      operation: "TEXT NOT NULL",
+      durationMs: "INTEGER NOT NULL DEFAULT 0",
+      itemCount: "INTEGER NOT NULL DEFAULT 0",
+      tokenEstimate: "INTEGER NOT NULL DEFAULT 0",
+      status: "TEXT NOT NULL",
+      metadata: "TEXT NOT NULL DEFAULT '{}'",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_memory_usage_project ON memoryUsage(projectId, createdAt DESC)"],
   },
   combos: {
     columns: {

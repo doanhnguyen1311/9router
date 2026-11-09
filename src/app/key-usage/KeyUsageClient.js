@@ -106,6 +106,9 @@ export default function KeyUsageClient() {
   const [refreshedAt, setRefreshedAt] = useState(null);
   const [modelSaving, setModelSaving] = useState(false);
   const [modelMessage, setModelMessage] = useState("");
+  const [projectSaving, setProjectSaving] = useState(false);
+  const [projectMessage, setProjectMessage] = useState("");
+  const [newProjectName, setNewProjectName] = useState("");
   const requestControllerRef = useRef(null);
   const canViewModelList = summary?.permissions?.canViewModelList !== false;
 
@@ -187,6 +190,8 @@ export default function KeyUsageClient() {
       setBackgroundRefreshing(false);
       setModelSaving(false);
       setModelMessage("");
+      setProjectMessage("");
+      setNewProjectName("");
     }
   };
 
@@ -203,6 +208,8 @@ export default function KeyUsageClient() {
     setBackgroundRefreshing(false);
     setModelSaving(false);
     setModelMessage("");
+    setProjectMessage("");
+    setNewProjectName("");
   };
 
   const selectModel = async (selectedModel) => {
@@ -238,6 +245,43 @@ export default function KeyUsageClient() {
       setSummary(current => current ? { ...current, effortPolicy: data.effortPolicy } : current);
     } catch (error) { setEffortError(error.message || "Could not select effort"); }
     finally { setEffortBusy(false); }
+  }
+
+  async function selectProject(projectId) {
+    if (!activeKey) return;
+    setProjectSaving(true); setProjectMessage("");
+    try {
+      const response = await fetch("/api/key-usage", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeKey}` },
+        body: JSON.stringify({ projectId: projectId || null }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to change project.");
+      setSummary((current) => current ? { ...current, projectAssignment: data.projectAssignment } : current);
+      setProjectMessage(projectId ? "Project assignment updated." : "Project removed from this key.");
+    } catch (projectError) { setProjectMessage(projectError.message || "Unable to change project."); }
+    finally { setProjectSaving(false); }
+  }
+
+  async function createAndAssignProject(event) {
+    event.preventDefault();
+    const name = newProjectName.trim();
+    if (!activeKey || !name) return;
+    setProjectSaving(true); setProjectMessage("");
+    try {
+      const response = await fetch("/api/key-usage", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeKey}` },
+        body: JSON.stringify({ createProject: { name } }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to create project.");
+      setSummary((current) => current ? { ...current, projectAssignment: data.projectAssignment } : current);
+      setNewProjectName("");
+      setProjectMessage("Project created and assigned.");
+    } catch (projectError) { setProjectMessage(projectError.message || "Unable to create project."); }
+    finally { setProjectSaving(false); }
   }
 
   return (
@@ -383,6 +427,51 @@ export default function KeyUsageClient() {
               <p className="mt-2 text-xs text-text-muted">Each model supports different levels. Admin model overrides may apply; unsupported defaults return an error. Your client can override the default only when user access is enabled.</p>
               {effortError && <p role="alert" className="text-sm text-red-500">{effortError}</p>}
             </Card>}
+            {summary.projectAssignment?.canUseProjects && (
+              <Card padding="sm" className="mb-4">
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined rounded-lg bg-brand-500/10 p-2 text-[19px] text-brand-500" aria-hidden="true">account_tree</span>
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-sm font-semibold text-text-main">Project Assignment</h2>
+                    <p className="mt-1 text-xs leading-5 text-text-muted">
+                      Optional. With No Project selected, requests behave exactly as standard 9Router requests and no project memory is read or written.
+                    </p>
+                    <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <div>
+                        <label htmlFor="key-project" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-text-muted">Active project</label>
+                        <select
+                          id="key-project"
+                          value={summary.projectAssignment.assignment?.projectId || ""}
+                          disabled={projectSaving}
+                          onChange={(event) => void selectProject(event.target.value)}
+                          className="h-10 w-full rounded-[10px] border border-border bg-surface-2 px-3 text-xs text-text-main outline-none focus:border-brand-500/60 disabled:opacity-60"
+                        >
+                          <option value="">No Project (Default)</option>
+                          {summary.projectAssignment.projects.map((project) => (
+                            <option key={project.id} value={project.id}>{project.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <form onSubmit={createAndAssignProject}>
+                        <label htmlFor="new-key-project" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-text-muted">Create new project</label>
+                        <div className="flex gap-2">
+                          <input
+                            id="new-key-project"
+                            value={newProjectName}
+                            onChange={(event) => setNewProjectName(event.target.value)}
+                            maxLength={120}
+                            placeholder="Project name"
+                            className="h-10 min-w-0 flex-1 rounded-[10px] border border-border bg-surface-2 px-3 text-xs text-text-main outline-none focus:border-brand-500/60"
+                          />
+                          <Button type="submit" size="sm" loading={projectSaving} disabled={!newProjectName.trim()}>Create</Button>
+                        </div>
+                      </form>
+                    </div>
+                    {projectMessage && <p className="mt-2 text-[11px] text-text-muted" aria-live="polite">{projectMessage}</p>}
+                  </div>
+                </div>
+              </Card>
+            )}
             {canViewModelList && summary.modelAccess?.restricted && (
               <Card padding="sm" className="mb-4">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

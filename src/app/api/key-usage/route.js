@@ -4,6 +4,14 @@ import { getApiKeyUsageSummary } from "@/lib/usageDb.js";
 import { getApiKeyByKey, updateApiKey } from "@/lib/localDb.js";
 import { extractClientApiKey } from "@/shared/utils/requestApiKey.js";
 import { findAllowedModel } from "@/shared/utils/keyModelRouting.js";
+import {
+  assignApiKeyToProject,
+  createProject,
+  getEffectiveUserProjectAccess,
+  getApiKeyProjectAssignment,
+  listAssignableProjectsForKey,
+} from "@/lib/projectMemory/repository.js";
+import { consumeProjectApiBudget } from "@/lib/projectMemory/rateLimit.js";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +50,30 @@ function visibleSummary(summary, canViewModelList) {
   return response;
 }
 
+async function projectAssignmentSummary(keyRecord) {
+  const access = keyRecord?.ownerId ? await getEffectiveUserProjectAccess(keyRecord.ownerId) : null;
+  const canUseProjects = keyRecord?.projectAccess === true && access?.effective === true;
+  if (!canUseProjects) return { canUseProjects: false, assignment: null, projects: [] };
+  const [assignment, projects] = await Promise.all([
+    getApiKeyProjectAssignment(keyRecord.id),
+    listAssignableProjectsForKey(keyRecord),
+  ]);
+  return {
+    canUseProjects: true,
+    assignment: assignment ? { projectId: assignment.projectId, name: assignment.name, status: assignment.status, assignedAt: assignment.assignedAt } : null,
+    projects: projects.filter((project) => ["owner", "editor"].includes(project.role)).map((project) => ({ id: project.id, name: project.name, description: project.description, status: project.status })),
+  };
+}
+
+function enforceProjectBudget(keyRecord, request) {
+  const budget = consumeProjectApiBudget(`key:${keyRecord.id}`, request);
+  if (budget.allowed) return null;
+  return NextResponse.json(
+    { error: "Project API rate limit exceeded", code: "PROJECT_RATE_LIMIT" },
+    { status: 429, headers: { ...NO_STORE_HEADERS, "Retry-After": String(budget.retryAfter) } },
+  );
+}
+
 function updatedPreferences(updated, canViewModelList) {
   const effortPolicy = { ...updated.effortPolicy };
   if (!canViewModelList) delete effortPolicy.overrides;
@@ -73,6 +105,8 @@ export async function GET(request) {
         { status: 401, headers: NO_STORE_HEADERS },
       );
     }
+    const rateLimited = enforceProjectBudget(keyRecord, request);
+    if (rateLimited) return rateLimited;
     const visibility = visibilityFromKeyRecord(keyRecord);
     if (!visibility.allowKeyUsage) return usageDisabledResponse();
     const summary = await getApiKeyUsageSummary(apiKey, keyRecord);
@@ -84,7 +118,7 @@ export async function GET(request) {
     }
 
     return NextResponse.json(
-      visibleSummary(summary, visibility.canViewModelList),
+      { ...visibleSummary(summary, visibility.canViewModelList), projectAssignment: await projectAssignmentSummary(keyRecord) },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {
@@ -106,11 +140,16 @@ export async function PATCH(request) {
         { status: 401, headers: NO_STORE_HEADERS },
       );
     }
+    const rateLimited = enforceProjectBudget(keyRecord, request);
+    if (rateLimited) return rateLimited;
     const visibility = visibilityFromKeyRecord(keyRecord);
     if (!visibility.allowKeyUsage) return usageDisabledResponse();
     const body = await request.json().catch(() => null);
-    if (!body || Array.isArray(body) || !Object.keys(body).length || Object.keys(body).some(k => !["selectedModel", "selectedEffort"].includes(k))) {
-      return NextResponse.json({ error: "Only selectedModel and selectedEffort may be changed" }, { status: 400, headers: NO_STORE_HEADERS });
+    if (!body || Array.isArray(body) || !Object.keys(body).length || Object.keys(body).some(k => !["selectedModel", "selectedEffort", "projectId", "createProject"].includes(k))) {
+      return NextResponse.json({ error: "Only selectedModel, selectedEffort, projectId, and createProject may be changed" }, { status: 400, headers: NO_STORE_HEADERS });
+    }
+    if (Object.hasOwn(body, "projectId") && Object.hasOwn(body, "createProject")) {
+      return NextResponse.json({ error: "Choose an existing project or create a new one, not both" }, { status: 400, headers: NO_STORE_HEADERS });
     }
     const updates = {};
     if (body.selectedModel !== undefined) {
@@ -131,13 +170,23 @@ export async function PATCH(request) {
       updates.selectedEffort = body.selectedEffort;
     }
     // The repository rechecks Key Usage and effort access inside the write transaction.
-    const updated = await updateApiKey(
-      keyRecord.id,
-      updates,
-      { keyUsageSelfService: true },
-    );
+    const updated = Object.keys(updates).length
+      ? await updateApiKey(keyRecord.id, updates, { keyUsageSelfService: true })
+      : keyRecord;
+    if (Object.hasOwn(body, "projectId")) {
+      if (body.projectId !== null && typeof body.projectId !== "string") return NextResponse.json({ error: "projectId must be a string or null" }, { status: 400, headers: NO_STORE_HEADERS });
+      await assignApiKeyToProject(keyRecord.id, body.projectId, null, { selfService: true });
+    }
+    if (Object.hasOwn(body, "createProject")) {
+      if (!body.createProject || typeof body.createProject !== "object" || Array.isArray(body.createProject)) return NextResponse.json({ error: "Invalid project details" }, { status: 400, headers: NO_STORE_HEADERS });
+      const project = await createProject(body.createProject, {
+        principalId: keyRecord.ownerId,
+        displayName: "API key owner",
+      });
+      await assignApiKeyToProject(keyRecord.id, project.id, null, { selfService: true });
+    }
     return NextResponse.json(
-      updatedPreferences(updated, visibility.canViewModelList),
+      { ...updatedPreferences(updated, visibility.canViewModelList), projectAssignment: await projectAssignmentSummary(updated) },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {
@@ -156,6 +205,9 @@ export async function PATCH(request) {
         { error: "The allowed model configuration changed. Reload and try again." },
         { status: 409, headers: NO_STORE_HEADERS },
       );
+    }
+    if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) {
+      return NextResponse.json({ error: error.message, code: error.code || "PROJECT_ERROR" }, { status: error.status, headers: NO_STORE_HEADERS });
     }
     return NextResponse.json(
       { error: "Unable to update the selected model right now." },

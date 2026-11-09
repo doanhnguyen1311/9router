@@ -10,6 +10,7 @@ export async function handleChat(request, clientRawRequest = null, historyBody =
     getHistoryObserver(request)?.finish(request.signal?.aborted ? "aborted" : "failed", error);
     throw error;
   }
+  observeProjectResponse(request, response);
   const observer = getHistoryObserver(request);
   if (!observer) return response;
   try { return observer.wrap(response, request.signal); }
@@ -45,6 +46,11 @@ import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getAllowedConnectionIds, getKeyAccessContext, enforceKeyAccess, filterAdapterModels, resolveKeyModelRequest } from "../services/keyAccess.js";
 import { enforceApiKeyQuota } from "../services/apiKeyQuota.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
+import {
+  observeProjectResponse,
+  prepareProjectRequest,
+  recordProjectRouteForRequest,
+} from "@/lib/projectMemory/runtime.js";
 
 /**
  * Handle chat completion request
@@ -113,7 +119,9 @@ async function handleChatRequest(request, clientRawRequest = null, historyBody =
   // Per-key access control: a restricted key may call only its listed combos and
   // models. Checked once on the requested target, before bypass, combo expansion
   // and any credential lookup; an allowed combo grants the members it routes to.
+  let identifiedKeyRecord = null;
   const keyAccess = await getKeyAccessContext(request, (key) => {
+    identifiedKeyRecord = key;
     getHistoryObserver(request)?.identify(key?.isActive ? key.id : null);
     if (key?.isActive && !key.isExpired) setKeyEffortPolicy(request, key.effortPolicy);
   });
@@ -131,6 +139,23 @@ async function handleChatRequest(request, clientRawRequest = null, historyBody =
 
   const quotaDenied = await enforceApiKeyQuota(request);
   if (quotaDenied) return quotaDenied;
+
+  // Project Memory is strictly opt-in. An unassigned key skips this branch;
+  // assigned-project failures are isolated from the provider request.
+  if (identifiedKeyRecord?.assignedProjectId) {
+    try {
+      const prepared = await prepareProjectRequest({
+        request,
+        body,
+        keyRecord: identifiedKeyRecord,
+        clientSessionId: sessionId,
+        endpoint: new URL(request.url).pathname,
+      });
+      body = prepared.body;
+    } catch (error) {
+      log.warn("PROJECT_MEMORY", `fail-open: ${error.message}`);
+    }
+  }
 
   const requiredCapabilities = detectRequiredCapabilities(body);
 
@@ -343,6 +368,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    try {
+      await recordProjectRouteForRequest(request, provider, credentials.connectionId);
+    } catch (error) {
+      log.warn("PROJECT_MEMORY", `session route fail-open: ${error.message}`);
+    }
 
     // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
     if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {

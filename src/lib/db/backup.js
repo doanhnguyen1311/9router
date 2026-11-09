@@ -46,7 +46,9 @@ export function backupDbLite(adapter, destDir, destName = "data.sqlite") {
     const excluded = new Set(BACKUP_EXCLUDE_TABLES);
     const tables = adapter
       .all(`SELECT name, sql FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
-      .filter((t) => !excluded.has(t.name));
+      // FTS is a derived index. Exclude its virtual table and shadow tables;
+      // their CREATE VIRTUAL TABLE syntax is not portable through ATTACH copy.
+      .filter((t) => !excluded.has(t.name) && !t.name.startsWith("projectSearch"));
 
     adapter.transaction(() => {
       for (const t of tables) {

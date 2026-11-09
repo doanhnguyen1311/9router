@@ -94,6 +94,7 @@ export async function PUT(request, { params }) {
       effortPolicy,
       allowKeyUsage,
       allowKeyUsageModelList,
+      projectAccess,
     } = body;
     if (effortPolicy !== undefined && !(await hasAdminSession(request))) return NextResponse.json({ error: "Admin session required to change effort access" }, { status: 401 });
 
@@ -104,7 +105,7 @@ export async function PUT(request, { params }) {
 
     const updateData = {};
     if (isActive !== undefined) updateData.isActive = isActive;
-    for (const [field, value] of Object.entries({ allowKeyUsage, allowKeyUsageModelList })) {
+    for (const [field, value] of Object.entries({ allowKeyUsage, allowKeyUsageModelList, projectAccess })) {
       if (value === undefined) continue;
       if (typeof value !== "boolean") {
         return NextResponse.json({ error: `${field} must be a boolean` }, { status: 400 });
