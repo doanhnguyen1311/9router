@@ -12,8 +12,27 @@ export default {
   version: 3,
   name: "project-quota-and-unique-names",
   up(db) {
+    const keyColumns = new Set(db.all("PRAGMA table_info(apiKeys)").map((row) => row.name));
+    if (!keyColumns.has("maxProjects")) db.exec("ALTER TABLE apiKeys ADD COLUMN maxProjects INTEGER");
+
     const columns = new Set(db.all("PRAGMA table_info(projects)").map((row) => row.name));
     if (!columns.has("nameKey")) db.exec("ALTER TABLE projects ADD COLUMN nameKey TEXT");
+    if (!columns.has("createdByApiKeyId")) {
+      db.exec("ALTER TABLE projects ADD COLUMN createdByApiKeyId TEXT REFERENCES apiKeys(id) ON DELETE SET NULL");
+    }
+
+    db.exec(`CREATE TABLE IF NOT EXISTS projectApiKeyMembers (
+      projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      apiKeyId TEXT NOT NULL REFERENCES apiKeys(id) ON DELETE CASCADE,
+      addedBy TEXT NOT NULL,
+      addedAt TEXT NOT NULL,
+      PRIMARY KEY (projectId, apiKeyId)
+    )`);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_pakm_key ON projectApiKeyMembers(apiKeyId)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_pakm_project ON projectApiKeyMembers(projectId)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_projects_created_by_key ON projects(createdByApiKeyId)");
+    db.exec(`INSERT OR IGNORE INTO projectApiKeyMembers(projectId, apiKeyId, addedBy, addedAt)
+      SELECT projectId, apiKeyId, assignedBy, assignedAt FROM projectApiKeys`);
 
     const rows = db.all("SELECT id, name, createdAt FROM projects ORDER BY createdAt ASC, id ASC")
       .map((row) => ({ ...row, normalized: normalizedName(row.name) }));
@@ -41,6 +60,13 @@ export default {
       WHEN NEW.status <> 'archived' AND
         (SELECT COUNT(*) FROM projects WHERE ownerId=NEW.ownerId AND status <> 'archived') >=
         COALESCE((SELECT maxProjectsPerUser FROM projectSystemSettings WHERE id=1), 50)
+      BEGIN SELECT RAISE(ABORT, 'PROJECT_LIMIT'); END`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_projects_key_quota_insert
+      BEFORE INSERT ON projects
+      WHEN NEW.status <> 'archived' AND NEW.createdByApiKeyId IS NOT NULL AND
+        (SELECT maxProjects FROM apiKeys WHERE id=NEW.createdByApiKeyId) IS NOT NULL AND
+        (SELECT COUNT(*) FROM projects WHERE createdByApiKeyId=NEW.createdByApiKeyId AND status <> 'archived') >=
+        (SELECT maxProjects FROM apiKeys WHERE id=NEW.createdByApiKeyId)
       BEGIN SELECT RAISE(ABORT, 'PROJECT_LIMIT'); END`);
     db.exec(`CREATE TRIGGER IF NOT EXISTS trg_projects_quota_update
       BEFORE UPDATE OF ownerId, status ON projects

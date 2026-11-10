@@ -30,7 +30,7 @@ export async function DELETE(request, { params }) {
     const { id } = await params;
     await requireProjectRole(id, identity.principalId, ["owner", "editor"]);
     const body = await request.json();
-    await assignApiKeyToProject(body.apiKeyId, null, identity);
+    await assignApiKeyToProject(body.apiKeyId, null, identity, { removeFromProjectId: id });
     return projectJson({ assignment: null });
   } catch (error) { return projectErrorResponse(error); }
 }

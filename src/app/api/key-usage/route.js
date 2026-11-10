@@ -53,13 +53,23 @@ function visibleSummary(summary, canViewModelList) {
 async function projectAssignmentSummary(keyRecord) {
   const access = keyRecord?.ownerId ? await getEffectiveUserProjectAccess(keyRecord.ownerId) : null;
   const canUseProjects = keyRecord?.projectAccess === true && access?.effective === true;
-  if (!canUseProjects) return { canUseProjects: false, assignment: null, projects: [] };
+  if (!canUseProjects) {
+    return {
+      canUseProjects: false,
+      assignment: null,
+      projects: [],
+      maxProjects: keyRecord?.maxProjects ?? null,
+      createdProjectCount: keyRecord?.createdProjectCount ?? 0,
+    };
+  }
   const [assignment, projects] = await Promise.all([
     getApiKeyProjectAssignment(keyRecord.id),
     listAssignableProjectsForKey(keyRecord),
   ]);
   return {
     canUseProjects: true,
+    maxProjects: keyRecord?.maxProjects ?? null,
+    createdProjectCount: keyRecord?.createdProjectCount ?? 0,
     assignment: assignment ? { projectId: assignment.projectId, name: assignment.name, status: assignment.status, assignedAt: assignment.assignedAt } : null,
     projects: projects.filter((project) => ["owner", "editor"].includes(project.role)).map((project) => ({ id: project.id, name: project.name, description: project.description, status: project.status })),
   };
@@ -179,14 +189,21 @@ export async function PATCH(request) {
     }
     if (Object.hasOwn(body, "createProject")) {
       if (!body.createProject || typeof body.createProject !== "object" || Array.isArray(body.createProject)) return NextResponse.json({ error: "Invalid project details" }, { status: 400, headers: NO_STORE_HEADERS });
-      const project = await createProject(body.createProject, {
-        principalId: keyRecord.ownerId,
-        displayName: "API key owner",
-      });
+      const project = await createProject(
+        body.createProject,
+        {
+          principalId: keyRecord.ownerId,
+          displayName: "API key owner",
+        },
+        { apiKeyId: keyRecord.id },
+      );
       await assignApiKeyToProject(keyRecord.id, project.id, null, { selfService: true });
     }
+    const finalRecord = Object.hasOwn(body, "createProject") || Object.hasOwn(body, "projectId")
+      ? (await getApiKeyByKey(apiKey)) || updated
+      : updated;
     return NextResponse.json(
-      { ...updatedPreferences(updated, visibility.canViewModelList), projectAssignment: await projectAssignmentSummary(updated) },
+      { ...updatedPreferences(finalRecord, visibility.canViewModelList), projectAssignment: await projectAssignmentSummary(finalRecord) },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {

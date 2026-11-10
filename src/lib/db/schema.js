@@ -125,6 +125,7 @@ export const TABLES = {
       // installation model while remaining compatible with OIDC/SAML users.
       ownerId: "TEXT DEFAULT 'local-admin'",
       projectAccess: "INTEGER NOT NULL DEFAULT 1",
+      maxProjects: "INTEGER",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
@@ -160,6 +161,7 @@ export const TABLES = {
     columns: {
       id: "TEXT PRIMARY KEY",
       ownerId: "TEXT NOT NULL",
+      createdByApiKeyId: "TEXT REFERENCES apiKeys(id) ON DELETE SET NULL",
       name: "TEXT NOT NULL",
       nameKey: "TEXT",
       description: "TEXT NOT NULL DEFAULT ''",
@@ -172,6 +174,7 @@ export const TABLES = {
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(ownerId, updatedAt DESC)",
       "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status, updatedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_projects_created_by_key ON projects(createdByApiKeyId)",
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_key_unique ON projects(nameKey) WHERE nameKey IS NOT NULL",
     ],
   },
@@ -200,6 +203,19 @@ export const TABLES = {
       assignedAt: "TEXT NOT NULL",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_project_api_keys_project ON projectApiKeys(projectId)"],
+  },
+  projectApiKeyMembers: {
+    columns: {
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      apiKeyId: "TEXT NOT NULL REFERENCES apiKeys(id) ON DELETE CASCADE",
+      addedBy: "TEXT NOT NULL",
+      addedAt: "TEXT NOT NULL",
+    },
+    primaryKey: "PRIMARY KEY (projectId, apiKeyId)",
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_pakm_key ON projectApiKeyMembers(apiKeyId)",
+      "CREATE INDEX IF NOT EXISTS idx_pakm_project ON projectApiKeyMembers(projectId)",
+    ],
   },
   projectSettings: {
     columns: {

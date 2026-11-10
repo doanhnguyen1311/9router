@@ -210,6 +210,57 @@ describe("Project Memory project and gateway contract", () => {
     expect(await repository.assignApiKeyToProject(aliceKey.id, null, bob)).toBeNull();
   });
 
+  it("restricts Active Project choices to added projects and enforces per-key maxProjects creation quota", async () => {
+    const { database, repository } = await boot();
+    const addedProject = await repository.createProject({ name: "Added Project" }, owner);
+    const otherProject = await repository.createProject({ name: "Unlinked Project" }, owner);
+    const key = await database.createApiKey("scoped-key", "scoped-machine");
+
+    // Before adding the key to any project, assignable projects for this key must be empty
+    let freshKey = await database.getApiKeyById(key.id);
+    expect(freshKey.linkedProjects).toEqual([]);
+    expect(await repository.listAssignableProjectsForKey(freshKey)).toEqual([]);
+
+    // Self-service cannot activate a project the key has not been added to
+    await expect(
+      repository.assignApiKeyToProject(key.id, otherProject.id, null, { selfService: true }),
+    ).rejects.toMatchObject({ code: "PROJECT_FORBIDDEN" });
+
+    // Admin adds the key into addedProject
+    await repository.assignApiKeyToProject(key.id, addedProject.id, owner);
+    freshKey = await database.getApiKeyById(key.id);
+    expect(freshKey.assignedProjectId).toBe(addedProject.id);
+    expect(freshKey.linkedProjects.map((p) => p.id)).toEqual([addedProject.id]);
+    expect((await repository.listAssignableProjectsForKey(freshKey)).map((p) => p.id)).toEqual([addedProject.id]);
+
+    // Switching Active Project to No Project keeps membership in addedProject intact
+    await repository.assignApiKeyToProject(key.id, null, null, { selfService: true });
+    freshKey = await database.getApiKeyById(key.id);
+    expect(freshKey.assignedProjectId).toBeNull();
+    expect(freshKey.linkedProjects.map((p) => p.id)).toEqual([addedProject.id]);
+
+    // Key can re-activate addedProject via selfService
+    await repository.assignApiKeyToProject(key.id, addedProject.id, null, { selfService: true });
+    expect((await database.getApiKeyById(key.id)).assignedProjectId).toBe(addedProject.id);
+
+    // Per-API-key maxProjects limit enforcement
+    await database.updateApiKey(key.id, { maxProjects: 0 });
+    await expect(
+      repository.createProject({ name: "Blocked By Zero Limit" }, owner, { apiKeyId: key.id }),
+    ).rejects.toMatchObject({ code: "PROJECT_LIMIT", status: 409 });
+
+    await database.updateApiKey(key.id, { maxProjects: 1 });
+    const createdByKey = await repository.createProject({ name: "Key Created 1" }, owner, { apiKeyId: key.id });
+    freshKey = await database.getApiKeyById(key.id);
+    expect(freshKey.maxProjects).toBe(1);
+    expect(freshKey.createdProjectCount).toBe(1);
+    expect(freshKey.linkedProjects.map((p) => p.id)).toContain(createdByKey.id);
+
+    await expect(
+      repository.createProject({ name: "Key Created 2 Over Limit" }, owner, { apiKeyId: key.id }),
+    ).rejects.toMatchObject({ code: "PROJECT_LIMIT", status: 409 });
+  });
+
   it("injects bounded untrusted context only into the user turn and isolates projects", async () => {
     const { repository, memory, retrieval, runtime, database } = await boot();
     const project = await repository.createProject({ name: "Context A" }, owner);

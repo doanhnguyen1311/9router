@@ -453,18 +453,54 @@ export default function KeyUsageClient() {
                         </select>
                       </div>
                       <form onSubmit={createAndAssignProject}>
-                        <label htmlFor="new-key-project" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-text-muted">Create new project</label>
-                        <div className="flex gap-2">
-                          <input
-                            id="new-key-project"
-                            value={newProjectName}
-                            onChange={(event) => setNewProjectName(event.target.value)}
-                            maxLength={120}
-                            placeholder="Project name"
-                            className="h-10 min-w-0 flex-1 rounded-[10px] border border-border bg-surface-2 px-3 text-xs text-text-main outline-none focus:border-brand-500/60"
-                          />
-                          <Button type="submit" size="sm" loading={projectSaving} disabled={!newProjectName.trim()}>Create</Button>
+                        <div className="mb-1.5 flex items-center justify-between gap-2">
+                          <label htmlFor="new-key-project" className="block text-[11px] font-semibold uppercase tracking-wide text-text-muted">Create new project</label>
+                          {summary.projectAssignment.maxProjects !== null && summary.projectAssignment.maxProjects !== undefined && (
+                            <span className="text-[10px] font-medium text-text-muted">
+                              {summary.projectAssignment.createdProjectCount || 0} / {summary.projectAssignment.maxProjects} created
+                            </span>
+                          )}
                         </div>
+                        {summary.projectAssignment.maxProjects === 0 ? (
+                          <p className="flex h-10 items-center rounded-[10px] border border-border bg-surface-2/60 px-3 text-xs text-text-muted">
+                            Project creation is disabled by the administrator for this key.
+                          </p>
+                        ) : (
+                          <div className="flex gap-2">
+                            <input
+                              id="new-key-project"
+                              value={newProjectName}
+                              onChange={(event) => setNewProjectName(event.target.value)}
+                              maxLength={120}
+                              disabled={
+                                summary.projectAssignment.maxProjects !== null &&
+                                summary.projectAssignment.maxProjects !== undefined &&
+                                (summary.projectAssignment.createdProjectCount || 0) >= summary.projectAssignment.maxProjects
+                              }
+                              placeholder={
+                                summary.projectAssignment.maxProjects !== null &&
+                                summary.projectAssignment.maxProjects !== undefined &&
+                                (summary.projectAssignment.createdProjectCount || 0) >= summary.projectAssignment.maxProjects
+                                  ? "Project limit reached for this key"
+                                  : "Project name"
+                              }
+                              className="h-10 min-w-0 flex-1 rounded-[10px] border border-border bg-surface-2 px-3 text-xs text-text-main outline-none focus:border-brand-500/60 disabled:opacity-60"
+                            />
+                            <Button
+                              type="submit"
+                              size="sm"
+                              loading={projectSaving}
+                              disabled={
+                                !newProjectName.trim() ||
+                                (summary.projectAssignment.maxProjects !== null &&
+                                  summary.projectAssignment.maxProjects !== undefined &&
+                                  (summary.projectAssignment.createdProjectCount || 0) >= summary.projectAssignment.maxProjects)
+                              }
+                            >
+                              Create
+                            </Button>
+                          </div>
+                        )}
                       </form>
                     </div>
                     {projectMessage && <p className="mt-2 text-[11px] text-text-muted" aria-live="polite">{projectMessage}</p>}

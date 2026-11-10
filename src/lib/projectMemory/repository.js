@@ -16,6 +16,7 @@ import {
   projectNameKey,
 } from "./config.js";
 import { hashApiKey } from "@/lib/apiKeyStorage.js";
+import { notifyApiKeysChanged } from "@/lib/apiKeyEvents.js";
 
 const bool = (value) => value === 1 || value === true;
 
@@ -160,7 +161,7 @@ export async function getEffectiveUserProjectAccess(principalId) {
   return { system, userEnabled, effective: system.enabled && userEnabled };
 }
 
-export async function createProject({ name, description = "" }, identity) {
+export async function createProject({ name, description = "" }, identity, { apiKeyId = null } = {}) {
   const projectName = normalizeProjectName(name);
   const projectDescription = normalizeDescription(description);
   if (!projectName) throw projectError("INVALID_PROJECT", "Project name is required and must be at most 120 characters");
@@ -172,13 +173,41 @@ export async function createProject({ name, description = "" }, identity) {
   const now = new Date().toISOString();
   try {
     db.transaction(() => {
+      if (apiKeyId) {
+        const keyRow = db.get("SELECT id, projectAccess, maxProjects FROM apiKeys WHERE id=?", [apiKeyId]);
+        if (!keyRow || !bool(keyRow.projectAccess)) {
+          throw projectError("PROJECT_ACCESS_DISABLED", "Project access is disabled for this API key", 403);
+        }
+        if (keyRow.maxProjects !== null && keyRow.maxProjects !== undefined) {
+          const keyLimit = Number(keyRow.maxProjects);
+          const createdCount = db.get(
+            "SELECT COUNT(*) AS count FROM projects WHERE createdByApiKeyId=? AND status<>'archived'",
+            [apiKeyId],
+          )?.count || 0;
+          if (createdCount >= keyLimit) {
+            throw projectError(
+              "PROJECT_LIMIT",
+              keyLimit === 0
+                ? "Project creation is disabled for this API key (limit: 0)"
+                : `Project limit reached for this API key (${createdCount}/${keyLimit})`,
+              409,
+            );
+          }
+        }
+      }
       const count = db.get("SELECT COUNT(*) AS count FROM projects WHERE ownerId=? AND status<>'archived'", [identity.principalId])?.count || 0;
       const limit = db.get("SELECT maxProjectsPerUser FROM projectSystemSettings WHERE id=1")?.maxProjectsPerUser ?? access.system.maxProjectsPerUser;
       if (count >= limit) throw projectError("PROJECT_LIMIT", "Project limit reached", 409);
       db.run(
-        "INSERT INTO projects(id, ownerId, name, nameKey, description, status, version, createdAt, updatedAt, lastActivityAt) VALUES(?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)",
-        [id, identity.principalId, projectName, projectNameKey(projectName), projectDescription, now, now, now],
+        "INSERT INTO projects(id, ownerId, createdByApiKeyId, name, nameKey, description, status, version, createdAt, updatedAt, lastActivityAt) VALUES(?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)",
+        [id, identity.principalId, apiKeyId || null, projectName, projectNameKey(projectName), projectDescription, now, now, now],
       );
+      if (apiKeyId) {
+        db.run(
+          "INSERT OR IGNORE INTO projectApiKeyMembers(projectId, apiKeyId, addedBy, addedAt) VALUES(?, ?, ?, ?)",
+          [id, apiKeyId, identity.principalId, now],
+        );
+      }
       db.run(
         "INSERT INTO projectMembers(projectId, principalId, role, displayName, status, invitedBy, createdAt, updatedAt) VALUES(?, ?, 'owner', ?, 'active', ?, ?, ?)",
         [id, identity.principalId, identity.displayName || null, identity.principalId, now, now],
@@ -193,6 +222,7 @@ export async function createProject({ name, description = "" }, identity) {
   } catch (error) {
     rethrowProjectConstraint(error);
   }
+  if (apiKeyId) notifyApiKeysChanged();
   return getProjectById(id, identity.principalId);
 }
 
@@ -204,7 +234,7 @@ const PROJECT_STATS_SQL = `
     (SELECT COUNT(*) FROM projectFiles pf WHERE pf.projectId=p.id) AS fileCount,
     (SELECT COALESCE(SUM(fileSize),0) FROM projectFiles pf WHERE pf.projectId=p.id) AS indexedBytes,
     (SELECT COUNT(*) FROM projectSessions ps WHERE ps.projectId=p.id) AS sessionCount,
-    (SELECT COUNT(*) FROM projectApiKeys pak WHERE pak.projectId=p.id) AS apiKeyCount
+    (SELECT COUNT(*) FROM projectApiKeyMembers pam WHERE pam.projectId=p.id) AS apiKeyCount
   FROM projects p`;
 
 export async function listProjects(principalId, { includeAll = false, search = "" } = {}) {
@@ -395,10 +425,21 @@ export async function updateProjectSettings(projectId, input, identity) {
 }
 
 export async function listAssignableProjectsForKey(keyRecord) {
-  if (!keyRecord?.projectAccess) return [];
+  if (!keyRecord?.projectAccess || !keyRecord?.id) return [];
   const access = await getEffectiveUserProjectAccess(keyRecord.ownerId);
   if (!access.effective) return [];
-  return (await listProjects(keyRecord.ownerId)).filter((project) => ["owner", "editor"].includes(project.role));
+  const db = await getAdapter();
+  const linkedRows = db.all(
+    `SELECT projectId FROM projectApiKeyMembers WHERE apiKeyId=?
+     UNION
+     SELECT projectId FROM projectApiKeys WHERE apiKeyId=?`,
+    [keyRecord.id, keyRecord.id],
+  );
+  const linkedIds = new Set(linkedRows.map((r) => r.projectId));
+  if (linkedIds.size === 0) return [];
+  return (await listProjects(keyRecord.ownerId)).filter(
+    (project) => linkedIds.has(project.id) && ["owner", "editor"].includes(project.role),
+  );
 }
 
 export async function getApiKeyProjectAssignment(apiKeyId) {
@@ -411,11 +452,27 @@ export async function getApiKeyProjectAssignment(apiKeyId) {
   return row || null;
 }
 
-export async function assignApiKeyToProject(apiKeyId, projectId, actor, { selfService = false } = {}) {
+export async function assignApiKeyToProject(
+  apiKeyId,
+  projectId,
+  actor,
+  { selfService = false, removeFromProjectId = null, activeOnly = false } = {},
+) {
   const db = await getAdapter();
   const key = db.get("SELECT id, ownerId, projectAccess FROM apiKeys WHERE id=?", [apiKeyId]);
   if (!key) throw projectError("KEY_NOT_FOUND", "API key not found", 404);
   if (projectId == null || projectId === "") {
+    if (removeFromProjectId) {
+      const principalId = selfService ? (key.ownerId || "local-admin") : actor?.principalId;
+      if (!selfService && !actor?.admin && key.ownerId !== principalId) {
+        const role = principalId ? await getProjectRole(removeFromProjectId, principalId) : null;
+        if (!role || !["owner", "editor"].includes(role.role)) throw projectError("PROJECT_FORBIDDEN", "You cannot unassign this API key", 403);
+      }
+      db.run("DELETE FROM projectApiKeyMembers WHERE projectId=? AND apiKeyId=?", [removeFromProjectId, apiKeyId]);
+      db.run("DELETE FROM projectApiKeys WHERE projectId=? AND apiKeyId=?", [removeFromProjectId, apiKeyId]);
+      notifyApiKeysChanged();
+      return null;
+    }
     const assignment = db.get("SELECT projectId FROM projectApiKeys WHERE apiKeyId=?", [apiKeyId]);
     if (!assignment) return null;
     const principalId = selfService ? (key.ownerId || "local-admin") : actor?.principalId;
@@ -424,6 +481,7 @@ export async function assignApiKeyToProject(apiKeyId, projectId, actor, { selfSe
       if (!role || !["owner", "editor"].includes(role.role)) throw projectError("PROJECT_FORBIDDEN", "You cannot unassign this API key", 403);
     }
     db.run("DELETE FROM projectApiKeys WHERE apiKeyId=?", [apiKeyId]);
+    notifyApiKeysChanged();
     return null;
   }
   if (!bool(key.projectAccess)) throw projectError("PROJECT_ACCESS_DISABLED", "Project access is disabled for this API key", 403);
@@ -436,12 +494,26 @@ export async function assignApiKeyToProject(apiKeyId, projectId, actor, { selfSe
   }
   const access = await getEffectiveUserProjectAccess(key.ownerId || principalId);
   if (!access.effective) throw projectError("PROJECT_ACCESS_DISABLED", "Project access is disabled", 403);
+  if (selfService || activeOnly) {
+    const member = db.get(
+      "SELECT 1 AS ok FROM projectApiKeyMembers WHERE projectId=? AND apiKeyId=?",
+      [projectId, apiKeyId],
+    );
+    if (!member) {
+      throw projectError("PROJECT_FORBIDDEN", "This API key has not been added to the selected project", 403);
+    }
+  }
   const now = new Date().toISOString();
+  db.run(
+    `INSERT OR IGNORE INTO projectApiKeyMembers(projectId, apiKeyId, addedBy, addedAt) VALUES(?, ?, ?, ?)`,
+    [projectId, apiKeyId, principalId, now],
+  );
   db.run(
     `INSERT INTO projectApiKeys(apiKeyId, projectId, assignedBy, assignedAt) VALUES(?, ?, ?, ?)
      ON CONFLICT(apiKeyId) DO UPDATE SET projectId=excluded.projectId, assignedBy=excluded.assignedBy, assignedAt=excluded.assignedAt`,
     [apiKeyId, projectId, principalId, now],
   );
+  notifyApiKeysChanged();
   return getApiKeyProjectAssignment(apiKeyId);
 }
 
@@ -449,10 +521,19 @@ export async function listProjectApiKeys(projectId, principalId) {
   await requireProjectRole(projectId, principalId);
   const db = await getAdapter();
   return db.all(
-    `SELECT k.id, k.name, k.isActive, k.projectAccess, pak.assignedAt
-     FROM projectApiKeys pak JOIN apiKeys k ON k.id=pak.apiKeyId WHERE pak.projectId=? ORDER BY pak.assignedAt DESC`,
+    `SELECT k.id, k.name, k.isActive, k.projectAccess, pam.addedAt AS assignedAt, pak.projectId AS activeProjectId
+     FROM projectApiKeyMembers pam
+     JOIN apiKeys k ON k.id=pam.apiKeyId
+     LEFT JOIN projectApiKeys pak ON pak.apiKeyId=k.id
+     WHERE pam.projectId=?
+     ORDER BY pam.addedAt DESC`,
     [projectId],
-  ).map((row) => ({ ...row, isActive: bool(row.isActive), projectAccess: bool(row.projectAccess) }));
+  ).map((row) => ({
+    ...row,
+    isActive: bool(row.isActive),
+    projectAccess: bool(row.projectAccess),
+    isCurrentlyActiveProject: row.activeProjectId === projectId,
+  }));
 }
 
 export async function listAssignableApiKeysForProject(projectId, principalId, admin = false) {
@@ -463,8 +544,10 @@ export async function listAssignableApiKeysForProject(projectId, principalId, ad
   const params = admin ? [projectId] : [projectId, principalId];
   return db.all(
     `SELECT k.id, k.name, k.isActive, k.projectAccess, pak.projectId AS assignedProjectId
-     FROM apiKeys k LEFT JOIN projectApiKeys pak ON pak.apiKeyId=k.id
-     WHERE k.projectAccess=1 AND (pak.projectId IS NULL OR pak.projectId=?) ${ownerFilter}
+     FROM apiKeys k
+     LEFT JOIN projectApiKeys pak ON pak.apiKeyId=k.id
+     LEFT JOIN projectApiKeyMembers pam ON pam.apiKeyId=k.id AND pam.projectId=?
+     WHERE k.projectAccess=1 AND pam.apiKeyId IS NULL ${ownerFilter}
      ORDER BY k.createdAt ASC`,
     params,
   ).map((row) => ({ ...row, isActive: bool(row.isActive), projectAccess: bool(row.projectAccess) }));

@@ -64,7 +64,10 @@ function rowToKey(row) {
     allowKeyUsageModelList: row.allowKeyUsageModelList !== 0 && row.allowKeyUsageModelList !== false,
     ownerId: row.ownerId || "local-admin",
     projectAccess: row.projectAccess !== 0 && row.projectAccess !== false,
+    maxProjects: row.maxProjects === null || row.maxProjects === undefined ? null : Number(row.maxProjects),
+    createdProjectCount: Number(row.createdProjectCount || 0),
     assignedProjectId: row.assignedProjectId || null,
+    linkedProjects: Array.isArray(row.linkedProjects) ? row.linkedProjects : [],
     v2Proxy: v2ProxySummaryFromRow(row),
     quota,
     isExpired: isKeyQuotaExpired(quota),
@@ -130,6 +133,74 @@ export function recordApiKeyTokenCost(db, key, inputTokens, cost, now = new Date
   return true;
 }
 
+function enrichKeyRows(db, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const ids = rows.map((r) => r?.id).filter(Boolean);
+  if (!ids.length) return rows;
+  const placeholders = ids.map(() => "?").join(",");
+  const assignedMap = new Map();
+  const linkedMap = new Map();
+  const createdCountMap = new Map();
+
+  try {
+    const activeRows = db.all(
+      `SELECT apiKeyId, projectId FROM projectApiKeys WHERE apiKeyId IN (${placeholders})`,
+      ids,
+    );
+    for (const r of activeRows) {
+      assignedMap.set(r.apiKeyId, r.projectId);
+    }
+  } catch { /* ignore if table absent */ }
+
+  try {
+    const memberRows = db.all(
+      `SELECT m.apiKeyId, p.id, p.name, p.description, p.status
+       FROM projectApiKeyMembers m
+       JOIN projects p ON p.id = m.projectId
+       WHERE m.apiKeyId IN (${placeholders}) AND p.status <> 'archived'
+       ORDER BY m.addedAt DESC`,
+      ids,
+    );
+    for (const r of memberRows) {
+      if (!linkedMap.has(r.apiKeyId)) linkedMap.set(r.apiKeyId, []);
+      linkedMap.get(r.apiKeyId).push({
+        id: r.id,
+        name: r.name,
+        description: r.description || "",
+        status: r.status,
+      });
+    }
+  } catch { /* ignore if table absent */ }
+
+  try {
+    const countRows = db.all(
+      `SELECT createdByApiKeyId AS apiKeyId, COUNT(*) AS count
+       FROM projects
+       WHERE createdByApiKeyId IN (${placeholders}) AND status <> 'archived'
+       GROUP BY createdByApiKeyId`,
+      ids,
+    );
+    for (const r of countRows) {
+      createdCountMap.set(r.apiKeyId, Number(r.count || 0));
+    }
+  } catch { /* ignore if column absent */ }
+
+  return rows.map((row) => {
+    if (!row) return row;
+    return {
+      ...row,
+      assignedProjectId: assignedMap.get(row.id) ?? row.assignedProjectId ?? null,
+      linkedProjects: linkedMap.get(row.id) || [],
+      createdProjectCount: createdCountMap.get(row.id) ?? 0,
+    };
+  });
+}
+
+function enrichKeyRow(db, row) {
+  if (!row) return null;
+  return enrichKeyRows(db, [row])[0] || null;
+}
+
 export async function getApiKeys() {
   const db = await getAdapter();
   let rows = [];
@@ -140,6 +211,7 @@ export async function getApiKeys() {
       changed = changed || applied.changed;
       return applied.row;
     });
+    rows = enrichKeyRows(db, rows);
   });
   if (changed) notifyApiKeysChanged();
   return rows.map(rowToKey);
@@ -160,7 +232,7 @@ export async function getApiKeyById(id) {
   let changed = false;
   db.transaction(() => {
     const applied = applyDueQuotaReset(db, db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
-    row = applied.row;
+    row = enrichKeyRow(db, applied.row);
     changed = applied.changed;
   });
   if (changed) notifyApiKeysChanged();
@@ -180,7 +252,7 @@ export async function getApiKeyByKey(key) {
       [hashApiKey(key), key],
     );
     const applied = applyDueQuotaReset(db, joined);
-    row = applied.row ? { ...applied.row, assignedProjectId: joined?.assignedProjectId || null } : null;
+    row = applied.row ? enrichKeyRow(db, { ...applied.row, assignedProjectId: joined?.assignedProjectId || null }) : null;
     changed = applied.changed;
   });
   if (changed) notifyApiKeysChanged();
@@ -323,6 +395,10 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED,
     allowKeyUsageModelList: true,
     ownerId: typeof ownerId === "string" && ownerId.trim() ? ownerId.trim() : "local-admin",
     projectAccess: true,
+    maxProjects: null,
+    createdProjectCount: 0,
+    assignedProjectId: null,
+    linkedProjects: [],
     v2Proxy: { enabled: v2Proxy.enabled, configured: v2Proxy.enabled },
     quota: normalizedQuota,
     isExpired: isKeyQuotaExpired(normalizedQuota),
@@ -395,6 +471,18 @@ export async function updateApiKey(id, data, options = {}) {
       if (data[field] !== undefined && typeof data[field] !== "boolean") {
         const error = new Error(`${field} must be a boolean`);
         error.code = "INVALID_KEY_USAGE_ACCESS";
+        throw error;
+      }
+    }
+    if (data.maxProjects !== undefined) {
+      if (options.keyUsageSelfService === true) {
+        const error = new Error("Project creation limit is controlled by the administrator");
+        error.code = "KEY_USAGE_FORBIDDEN";
+        throw error;
+      }
+      if (data.maxProjects !== null && (!Number.isSafeInteger(data.maxProjects) || data.maxProjects < 0)) {
+        const error = new Error("maxProjects must be null or a non-negative integer");
+        error.code = "INVALID_KEY_MAX_PROJECTS";
         throw error;
       }
     }
@@ -471,7 +559,7 @@ export async function updateApiKey(id, data, options = {}) {
         accessRestricted = ?, accessAllow = ?, accessAccountRestricted = ?, accessAccountIds = ?,
         modelAlias = ?, selectedModel = ?, effortPolicy = ?,
         allowKeyUsage = ?, allowKeyUsageModelList = ?,
-        projectAccess = ?,
+        projectAccess = ?, maxProjects = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
         quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
@@ -483,7 +571,7 @@ export async function updateApiKey(id, data, options = {}) {
         routingCols.modelAlias, routingCols.selectedModel,
         JSON.stringify(merged.effortPolicy),
         merged.allowKeyUsage ? 1 : 0, merged.allowKeyUsageModelList ? 1 : 0,
-        merged.projectAccess ? 1 : 0,
+        merged.projectAccess ? 1 : 0, merged.maxProjects === undefined ? null : merged.maxProjects,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
         quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
@@ -491,7 +579,7 @@ export async function updateApiKey(id, data, options = {}) {
         id,
       ]
     );
-    result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+    result = rowToKey(enrichKeyRow(db, db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id])));
   });
   if (result) notifyApiKeysChanged();
   return result;
@@ -575,7 +663,7 @@ export async function resetApiKeyUsage(id) {
     [resetAt, id],
   );
   if ((res?.changes ?? 0) === 0) return null;
-  const key = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
+  const key = rowToKey(enrichKeyRow(db, db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id])));
   notifyApiKeysChanged();
   return key;
 }

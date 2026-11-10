@@ -125,6 +125,7 @@ export async function exportDb() {
       allowKeyUsageModelList: r.allowKeyUsageModelList !== 0 && r.allowKeyUsageModelList !== false,
       ownerId: r.ownerId || "local-admin",
       projectAccess: r.projectAccess !== 0 && r.projectAccess !== false,
+      maxProjects: r.maxProjects === null || r.maxProjects === undefined ? null : Number(r.maxProjects),
       v2Proxy: {
         enabled: r.v2Enabled === 1 || r.v2Enabled === true,
         upstreamBaseUrl: r.v2UpstreamBaseUrl || null,
@@ -161,6 +162,7 @@ export async function exportDb() {
       projects: db.all(`SELECT * FROM projects`),
       projectMembers: db.all(`SELECT * FROM projectMembers`),
       projectApiKeys: db.all(`SELECT * FROM projectApiKeys`),
+      projectApiKeyMembers: db.all(`SELECT * FROM projectApiKeyMembers`),
       projectSettings: db.all(`SELECT * FROM projectSettings`),
       projectSessions: db.all(`SELECT * FROM projectSessions`),
       memoryEvents: db.all(`SELECT * FROM memoryEvents`),
@@ -276,6 +278,9 @@ export async function importDb(payload) {
       const ownerId = typeof k.ownerId === "string" && k.ownerId.trim() ? k.ownerId.trim() : "local-admin";
       const projectAccess = k.projectAccess === undefined ? true : k.projectAccess;
       if (typeof projectAccess !== "boolean") throw new Error(`apiKeys ${k.id}: projectAccess must be boolean`);
+      const maxProjects = k.maxProjects === undefined || k.maxProjects === null
+        ? null
+        : (Number.isSafeInteger(Number(k.maxProjects)) && Number(k.maxProjects) >= 0 ? Number(k.maxProjects) : null);
       const protectedKey = isProtectedApiKeyRow(k)
         ? { storageKey: k.key, keyHash: k.keyHash, keyEncrypted: k.keyEncrypted }
         : protectApiKey(k.key, k.machineId);
@@ -347,8 +352,8 @@ export async function importDb(payload) {
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
           quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-          , ownerId, projectAccess
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          , ownerId, projectAccess, maxProjects
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, protectedKey.storageKey, protectedKey.keyHash, protectedKey.keyEncrypted,
           k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
@@ -362,7 +367,7 @@ export async function importDb(payload) {
           quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
           quotaCols.quotaExpiresAt, usageNextResetAt,
           usageCost, usageInputTokens, usageRequests, usageResetAt,
-          ownerId, projectAccess ? 1 : 0,
+          ownerId, projectAccess ? 1 : 0, maxProjects,
         ]
       );
     }
@@ -381,6 +386,9 @@ export async function importDb(payload) {
       insertRawRows("projectMembers", projectDump.projectMembers);
       insertRawRows("projectSettings", projectDump.projectSettings);
       insertRawRows("projectApiKeys", projectDump.projectApiKeys);
+      insertRawRows("projectApiKeyMembers", projectDump.projectApiKeyMembers);
+      db.exec(`INSERT OR IGNORE INTO projectApiKeyMembers(projectId, apiKeyId, addedBy, addedAt)
+        SELECT projectId, apiKeyId, assignedBy, assignedAt FROM projectApiKeys`);
       insertRawRows("projectSessions", projectDump.projectSessions);
       insertRawRows("memoryEvents", projectDump.memoryEvents);
       insertRawRows("extractionJobs", projectDump.extractionJobs);

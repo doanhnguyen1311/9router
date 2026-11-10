@@ -14,6 +14,7 @@ import {
 import { validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 import { validateKeyModelRoutingInput } from "@/shared/utils/keyModelRouting.js";
 import { validateKeyQuotaInput } from "@/shared/utils/keyQuota.js";
+import { assignApiKeyToProject } from "@/lib/projectMemory/repository.js";
 import { AI_MODELS } from "@/shared/constants/models.js";
 import { getProviderAlias } from "@/shared/constants/providers.js";
 
@@ -95,6 +96,8 @@ export async function PUT(request, { params }) {
       allowKeyUsage,
       allowKeyUsageModelList,
       projectAccess,
+      maxProjects,
+      activeProjectId,
     } = body;
     if (effortPolicy !== undefined && !(await hasAdminSession(request))) return NextResponse.json({ error: "Admin session required to change effort access" }, { status: 401 });
 
@@ -111,6 +114,15 @@ export async function PUT(request, { params }) {
         return NextResponse.json({ error: `${field} must be a boolean` }, { status: 400 });
       }
       updateData[field] = value;
+    }
+    if (maxProjects !== undefined) {
+      if (maxProjects !== null && (!Number.isSafeInteger(maxProjects) || maxProjects < 0)) {
+        return NextResponse.json({ error: "maxProjects must be null or a non-negative integer" }, { status: 400 });
+      }
+      updateData.maxProjects = maxProjects;
+    }
+    if (activeProjectId !== undefined && activeProjectId !== null && typeof activeProjectId !== "string") {
+      return NextResponse.json({ error: "activeProjectId must be a string or null" }, { status: 400 });
     }
     if (access !== undefined) {
       const checked = validateKeyAccessInput(access);
@@ -161,7 +173,16 @@ export async function PUT(request, { params }) {
       if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
       updateData.effortPolicy = checked.value;
     }
-    const updated = await updateApiKey(id, updateData);
+    let updated = Object.keys(updateData).length > 0 ? await updateApiKey(id, updateData) : existing;
+    if (activeProjectId !== undefined) {
+      await assignApiKeyToProject(
+        id,
+        activeProjectId || null,
+        { principalId: existing.ownerId || "local-admin", admin: true },
+        { activeOnly: true },
+      );
+      updated = await getApiKeyById(id);
+    }
 
     return NextResponse.json({ key: updated });
   } catch (error) {
@@ -169,8 +190,11 @@ export async function PUT(request, { params }) {
     if (error?.code === "KEY_MODEL_ALIAS_CONFLICT") {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    if (["INVALID_KEY_MODEL_ROUTING", "INVALID_KEY_EFFORT", "INVALID_KEY_USAGE_ACCESS"].includes(error?.code)) {
+    if (["INVALID_KEY_MODEL_ROUTING", "INVALID_KEY_EFFORT", "INVALID_KEY_USAGE_ACCESS", "INVALID_KEY_MAX_PROJECTS"].includes(error?.code)) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
     }
     return NextResponse.json({ error: "Failed to update key" }, { status: 500 });
   }

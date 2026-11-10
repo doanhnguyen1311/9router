@@ -93,6 +93,9 @@ export default function ApiKeysPageClient() {
 
   const [manageKeyId, setManageKeyId] = useState(null);
   const [manageTab, setManageTab] = useState("general");
+  const [maxProjectsMode, setMaxProjectsMode] = useState("default"); // "default" | "disabled" | "custom"
+  const [maxProjectsDraft, setMaxProjectsDraft] = useState("3");
+  const [savingProjectLimit, setSavingProjectLimit] = useState(false);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
@@ -300,29 +303,48 @@ export default function ApiKeysPageClient() {
 
   const handleAssignProject = async (key, targetProjectId) => {
     setActionError("");
+    const result = await updateKey(key.id, { activeProjectId: targetProjectId || null });
+    if (!result.ok) {
+      setActionError(result.error || "Could not change active project");
+    }
+  };
+
+  const syncMaxProjectsControls = (key) => {
+    if (!key) return;
+    if (key.maxProjects === null || key.maxProjects === undefined) {
+      setMaxProjectsMode("default");
+      setMaxProjectsDraft("3");
+    } else if (Number(key.maxProjects) === 0) {
+      setMaxProjectsMode("disabled");
+      setMaxProjectsDraft("0");
+    } else {
+      setMaxProjectsMode("custom");
+      setMaxProjectsDraft(String(key.maxProjects));
+    }
+  };
+
+  const handleSaveProjectLimit = async (key, nextMode = maxProjectsMode, nextDraft = maxProjectsDraft) => {
+    if (!key) return;
+    setActionError("");
+    let targetMaxProjects = null;
+    if (nextMode === "disabled") {
+      targetMaxProjects = 0;
+    } else if (nextMode === "custom") {
+      const parsed = Number.parseInt(String(nextDraft).trim(), 10);
+      if (!Number.isSafeInteger(parsed) || parsed < 1) {
+        setActionError("Project creation limit must be a positive integer (at least 1).");
+        return;
+      }
+      targetMaxProjects = parsed;
+    }
+    setSavingProjectLimit(true);
     try {
-      let res;
-      if (!targetProjectId) {
-        if (!key.assignedProjectId) return;
-        res = await fetch(`/api/projects/${key.assignedProjectId}/api-keys`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKeyId: key.id }),
-        });
-      } else {
-        res = await fetch(`/api/projects/${targetProjectId}/api-keys`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKeyId: key.id }),
-        });
+      const result = await updateKey(key.id, { maxProjects: targetMaxProjects });
+      if (!result.ok) {
+        setActionError(result.error || "Failed to update project creation limit");
       }
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setActionError(data.error || "Could not change project assignment");
-      }
-      await reloadData();
-    } catch (error) {
-      setActionError(error.message);
+    } finally {
+      setSavingProjectLimit(false);
     }
   };
 
@@ -353,6 +375,7 @@ export default function ApiKeysPageClient() {
   const openManage = (key, tab = "general") => {
     setActionError("");
     setManageTab(tab);
+    syncMaxProjectsControls(key);
     setManageKeyId(key.id);
   };
 
@@ -477,22 +500,37 @@ export default function ApiKeysPageClient() {
                           <span className="material-symbols-outlined text-[15px]">{copied === key.id ? "check" : "content_copy"}</span>
                         </button>
                       </div>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
-                        <span className="inline-flex items-center gap-1">
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]">
+                        <span className="inline-flex items-center gap-1 text-text-muted">
                           <span className="material-symbols-outlined text-[13px]">calendar_today</span>
                           {new Date(key.createdAt).toLocaleDateString()}
                         </span>
-                        {project ? (
-                          <Link href={`/dashboard/projects/${project.id}`} className="inline-flex items-center gap-1 text-sky-500 hover:underline">
-                            <span className="material-symbols-outlined text-[13px]">account_tree</span>
-                            {project.name}
-                          </Link>
-                        ) : (
-                          <span className="inline-flex items-center gap-1">
-                            <span className="material-symbols-outlined text-[13px]">link_off</span>
-                            No project
-                          </span>
-                        )}
+                        <div className="inline-flex items-center gap-1.5">
+                          <span className="text-text-muted">Active Project:</span>
+                          {project ? (
+                            <Link
+                              href={`/dashboard/projects/${project.id}`}
+                              className="inline-flex items-center gap-1 rounded-md bg-brand-500/10 px-2 py-0.5 font-medium text-brand-500 hover:bg-brand-500/20 transition"
+                              title="Click to open project workspace"
+                            >
+                              <span className="material-symbols-outlined text-[13px]">account_tree</span>
+                              {project.name}
+                            </Link>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-md bg-black/5 dark:bg-white/5 px-2 py-0.5 text-text-muted font-normal">
+                              <span className="material-symbols-outlined text-[13px]">link_off</span>
+                              None (Standard Gateway)
+                            </span>
+                          )}
+                        </div>
+                        <span className="inline-flex items-center gap-1 rounded-md bg-black/5 dark:bg-white/5 px-2 py-0.5 text-text-muted">
+                          <span className="material-symbols-outlined text-[13px]">folder_shared</span>
+                          Added to {key.linkedProjects?.length || 0} project{(key.linkedProjects?.length || 0) === 1 ? "" : "s"}
+                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-md bg-black/5 dark:bg-white/5 px-2 py-0.5 text-text-muted">
+                          <span className="material-symbols-outlined text-[13px]">create_new_folder</span>
+                          Created: {key.createdProjectCount || 0} / {key.maxProjects === null || key.maxProjects === undefined ? "∞" : key.maxProjects}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -553,28 +591,193 @@ export default function ApiKeysPageClient() {
               {manageTab === "general" && (
                 <div className="space-y-4">
                   <section>
-                    <h3 className="text-sm font-semibold text-text-main">Project Memory</h3>
-                    <p className="mt-0.5 text-xs text-text-muted">Requests made with this key will use the selected project&apos;s memory and files as context.</p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <select
-                        value={managedKey.assignedProjectId || ""}
-                        onChange={(e) => handleAssignProject(managedKey, e.target.value)}
-                        disabled={managedKey.projectAccess === false}
-                        className="h-10 flex-1 rounded-lg border border-border bg-surface-2 px-3 text-sm text-text-main outline-none disabled:opacity-50"
-                      >
-                        <option value="">No project (default gateway behavior)</option>
-                        {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                      </select>
-                      {managedKey.assignedProjectId && (
-                        <Link href={`/dashboard/projects/${managedKey.assignedProjectId}`} className="inline-flex h-10 items-center gap-1 rounded-lg border border-border px-3 text-xs text-text-muted hover:border-primary/50 hover:text-primary">
-                          <span className="material-symbols-outlined text-[15px]">open_in_new</span>
-                          Open
-                        </Link>
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-semibold text-text-main">Active Project</h3>
+                        <p className="mt-0.5 text-xs text-text-muted">
+                          Only projects that this API key has been <strong>added into</strong> (or created by this key) are shown below. Switching to <em>No Project</em> deactivates project context without removing the key from its projects.
+                        </p>
+                      </div>
+                      <Badge tone="primary">
+                        Added to {managedKey.linkedProjects?.length || 0} project{(managedKey.linkedProjects?.length || 0) === 1 ? "" : "s"}
+                      </Badge>
+                    </div>
+
+                    {/* Current Active Project Card */}
+                    {managedKey.assignedProjectId ? (
+                      (() => {
+                        const activeProj =
+                          managedKey.linkedProjects?.find((p) => p.id === managedKey.assignedProjectId) ||
+                          projectMap.get(managedKey.assignedProjectId);
+                        return (
+                          <div className="mt-3 rounded-xl border border-brand-500/30 bg-brand-500/5 p-3.5">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-2.5 min-w-0">
+                                <span className="material-symbols-outlined text-brand-500 text-[22px] mt-0.5">account_tree</span>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-semibold text-text-main text-sm truncate">{activeProj?.name || "Unknown Project"}</p>
+                                    <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[9px] font-bold uppercase text-green-500">
+                                      {activeProj?.status || "Active"}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-xs text-text-muted line-clamp-1">{activeProj?.description || "No project description provided."}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Link
+                                  href={`/dashboard/projects/${managedKey.assignedProjectId}`}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-main hover:border-brand-500/50 hover:text-brand-500 transition"
+                                >
+                                  <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                                  Workspace
+                                </Link>
+                                <Button
+                                  size="xs"
+                                  variant="secondary"
+                                  onClick={() => handleAssignProject(managedKey, "")}
+                                >
+                                  Deactivate
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <div className="mt-3 rounded-xl border border-border bg-surface-2/60 p-3 text-xs text-text-muted flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="material-symbols-outlined text-text-muted text-[18px]">link_off</span>
+                          <span>Currently <strong>No Active Project</strong>. Requests take the standard gateway path.</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Switch Active Project among Linked Projects only */}
+                    <div className="mt-3">
+                      <label className="block text-xs font-medium text-text-muted mb-1">
+                        Select Active Project (from projects this key belongs to):
+                      </label>
+                      {managedKey.projectAccess === false ? (
+                        <p className="text-xs text-orange-500 mt-1">Project access is disabled for this key. Enable it below to use Project Memory.</p>
+                      ) : !(managedKey.linkedProjects?.length > 0) ? (
+                        <div className="rounded-xl border border-dashed border-border bg-surface-2/40 p-3 text-xs text-text-muted flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                          <span>
+                            This API key has not been added to any Project yet. Add it from a project&apos;s <strong>API Keys</strong> tab first.
+                          </span>
+                          <Link
+                            href="/dashboard/projects"
+                            className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-main hover:border-primary/50 hover:text-primary shrink-0"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">account_tree</span>
+                            Go to Projects
+                          </Link>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={managedKey.assignedProjectId || ""}
+                            onChange={(e) => handleAssignProject(managedKey, e.target.value)}
+                            className="h-10 flex-1 rounded-lg border border-border bg-surface-2 px-3 text-sm text-text-main outline-none"
+                          >
+                            <option value="">-- No Active Project (Standard Gateway) --</option>
+                            {(managedKey.linkedProjects || []).map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.status || "active"})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       )}
                     </div>
-                    {managedKey.projectAccess === false && (
-                      <p className="mt-1.5 text-[11px] text-orange-500">Project access is disabled for this key by an administrator.</p>
-                    )}
+                  </section>
+
+                  <section className="border-t border-border pt-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-text-main">Project Permissions &amp; Creation Limit</h3>
+                        <p className="mt-0.5 text-xs text-text-muted">
+                          Control whether this API key can use Project Memory and how many new projects its holder is allowed to create.
+                        </p>
+                      </div>
+                      <Badge tone={managedKey.maxProjects === 0 ? "orange" : "primary"}>
+                        Created: {managedKey.createdProjectCount || 0} / {managedKey.maxProjects === null || managedKey.maxProjects === undefined ? "System Default" : managedKey.maxProjects}
+                      </Badge>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3">
+                      <div>
+                        <p className="text-xs font-semibold text-text-main">Allow Project Memory access</p>
+                        <p className="mt-0.5 text-[11px] text-text-muted">
+                          When disabled, this API key cannot inject project context or create/switch projects.
+                        </p>
+                      </div>
+                      <Toggle
+                        size="sm"
+                        checked={managedKey.projectAccess !== false}
+                        onChange={(checked) => updateKey(managedKey.id, { projectAccess: checked })}
+                      />
+                    </div>
+
+                    <div className="rounded-xl border border-border bg-surface-2/40 p-3 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold text-text-main">Max Projects this API key can create</p>
+                          <p className="mt-0.5 text-[11px] text-text-muted">
+                            Limits self-service project creation via Key Usage. Does not restrict projects an Admin adds this key into.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1 rounded-lg border border-border bg-surface p-1">
+                          {[
+                            ["default", "System Default"],
+                            ["disabled", "0 (Cannot Create)"],
+                            ["custom", "Custom Limit"],
+                          ].map(([mode, label]) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => {
+                                setMaxProjectsMode(mode);
+                                if (mode !== "custom") {
+                                  void handleSaveProjectLimit(managedKey, mode, maxProjectsDraft);
+                                }
+                              }}
+                              className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
+                                maxProjectsMode === mode
+                                  ? "bg-primary text-white shadow-sm"
+                                  : "text-text-muted hover:text-text-main"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {maxProjectsMode === "custom" && (
+                        <div className="flex items-center gap-2 pt-1">
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={maxProjectsDraft}
+                            onChange={(e) => setMaxProjectsDraft(e.target.value)}
+                            placeholder="Max projects (e.g. 3)"
+                            className="h-9 w-40 rounded-lg border border-border bg-surface px-3 text-xs text-text-main outline-none focus:border-primary/60"
+                          />
+                          <Button
+                            size="xs"
+                            loading={savingProjectLimit}
+                            onClick={() => handleSaveProjectLimit(managedKey, "custom", maxProjectsDraft)}
+                          >
+                            Save Limit
+                          </Button>
+                          <span className="text-[11px] text-text-muted">
+                            Used {managedKey.createdProjectCount || 0} of {maxProjectsDraft || 0} allowed
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </section>
 
                   <section className="border-t border-border pt-4">
