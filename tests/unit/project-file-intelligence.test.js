@@ -25,35 +25,47 @@ function crc32(buffer) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function storedZip(name, content) {
-  const fileName = Buffer.from(name);
-  const data = Buffer.from(content);
-  const checksum = crc32(data);
-  const local = Buffer.alloc(30);
-  local.writeUInt32LE(0x04034b50, 0);
-  local.writeUInt16LE(20, 4);
-  local.writeUInt32LE(checksum, 14);
-  local.writeUInt32LE(data.length, 18);
-  local.writeUInt32LE(data.length, 22);
-  local.writeUInt16LE(fileName.length, 26);
-  const central = Buffer.alloc(46);
-  central.writeUInt32LE(0x02014b50, 0);
-  central.writeUInt16LE(20, 4);
-  central.writeUInt16LE(20, 6);
-  central.writeUInt32LE(checksum, 16);
-  central.writeUInt32LE(data.length, 20);
-  central.writeUInt32LE(data.length, 24);
-  central.writeUInt16LE(fileName.length, 28);
-  central.writeUInt32LE(0, 42);
-  const centralOffset = local.length + fileName.length + data.length;
-  const centralSize = central.length + fileName.length;
+function storedZipEntries(entries) {
+  const localParts = [];
+  const centralParts = [];
+  let localOffset = 0;
+  let centralSize = 0;
+  for (const entry of entries) {
+    const fileName = Buffer.from(entry.name);
+    const data = Buffer.from(entry.content);
+    const checksum = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(fileName.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(fileName.length, 28);
+    central.writeUInt32LE(localOffset, 42);
+    localParts.push(local, fileName, data);
+    centralParts.push(central, fileName);
+    localOffset += local.length + fileName.length + data.length;
+    centralSize += central.length + fileName.length;
+  }
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(1, 8);
-  end.writeUInt16LE(1, 10);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
   end.writeUInt32LE(centralSize, 12);
-  end.writeUInt32LE(centralOffset, 16);
-  return Buffer.concat([local, fileName, data, central, fileName, end]);
+  end.writeUInt32LE(localOffset, 16);
+  return Buffer.concat([...localParts, ...centralParts, end]);
+}
+
+function storedZip(name, content) {
+  return storedZipEntries([{ name, content }]);
 }
 
 beforeEach(() => {
@@ -151,5 +163,45 @@ describe("Project file intelligence", () => {
     expect(ignored).toMatchObject({ ignored: true, reason: "secret-file" });
     const result = await files.importProjectZip({ projectId: project.id, buffer: storedZip("src/index.js", "export const value = 1;") }, owner);
     expect(result).toMatchObject({ total: 1, indexed: 1, failed: 0 });
+  });
+
+  it("bulk imports resolve dependencies once at completion and remain incremental", async () => {
+    const { repository, files, adapter } = await boot();
+    const project = await repository.createProject({ name: "Bulk ZIP" }, owner);
+    const archive = storedZipEntries([
+      { name: "src/db.ts", content: "export function connect() { return true; }" },
+      { name: "src/app.ts", content: 'import { connect } from "./db"; export function start() { return connect(); }' },
+      { name: "src/ignored.log", content: "ignored" },
+    ]);
+
+    const first = await files.importProjectZip({ projectId: project.id, buffer: archive }, owner);
+    const dependency = adapter.get(
+      "SELECT targetFileId FROM projectFileDependencies WHERE projectId=? AND targetReference='./db'",
+      [project.id],
+    );
+    const second = await files.importProjectZip({ projectId: project.id, buffer: archive }, owner);
+
+    expect(first).toMatchObject({ total: 3, indexed: 2, ignored: 1, failed: 0 });
+    expect(dependency.targetFileId).toBeTruthy();
+    expect(second.results.filter((item) => item.unchanged)).toHaveLength(2);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectFiles WHERE projectId=?", [project.id]).count).toBe(2);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectFileDependencies WHERE projectId=?", [project.id]).count).toBe(1);
+  });
+
+  it("serializes same-project ZIP imports and releases the queue after failure", async () => {
+    const { repository, files, adapter } = await boot();
+    const project = await repository.createProject({ name: "Concurrent ZIP" }, owner);
+    await expect(files.importProjectZip({ projectId: project.id, buffer: Buffer.from("not-a-zip") }, owner))
+      .rejects.toMatchObject({ code: "INVALID_ZIP" });
+
+    const [first, second] = await Promise.all([
+      files.importProjectZip({ projectId: project.id, buffer: storedZip("src/a.ts", "export const a = 1;") }, owner),
+      files.importProjectZip({ projectId: project.id, buffer: storedZip("src/b.ts", 'import { a } from "./a"; export const b = a;') }, owner),
+    ]);
+
+    expect(first.failed).toBe(0);
+    expect(second.failed).toBe(0);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectFiles WHERE projectId=?", [project.id]).count).toBe(2);
+    expect(adapter.get("SELECT targetFileId FROM projectFileDependencies WHERE projectId=?", [project.id]).targetFileId).toBeTruthy();
   });
 });

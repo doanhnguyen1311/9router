@@ -25,6 +25,8 @@ import { redactProjectText } from "./privacy.js";
 const STORAGE_ROOT = path.join(DATA_DIR, "project-memory", "files");
 const PARSER_VERSION = "9router-file-intelligence/1";
 
+const projectImportLocks = new Map();
+
 const LANGUAGE_BY_EXTENSION = Object.freeze({
   ".ts": "TypeScript", ".tsx": "TypeScript", ".mts": "TypeScript", ".cts": "TypeScript",
   ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
@@ -288,7 +290,7 @@ function fileRow(row) {
   };
 }
 
-export async function indexProjectFile({ projectId, relativePath: rawPath, buffer, lastModified = null, sourceType = "upload" }, identity) {
+export async function indexProjectFile({ projectId, relativePath: rawPath, buffer, lastModified = null, sourceType = "upload", deferProjectFinalize = false }, identity) {
   await requireProjectRole(projectId, identity.principalId, ["owner", "editor"]);
   const relativePath = normalizeRelativePath(rawPath);
   const system = await getProjectSystemSettings();
@@ -385,12 +387,14 @@ export async function indexProjectFile({ projectId, relativePath: rawPath, buffe
       });
     }
   });
-  await resolveProjectDependencies(projectId);
-  await touchProject(projectId);
+  if (!deferProjectFinalize) {
+    await resolveProjectDependencies(projectId);
+    await touchProject(projectId);
+  }
   return getProjectFile(projectId, id, identity.principalId);
 }
 
-export async function importProjectZip({ projectId, buffer, sourceName = "archive.zip" }, identity) {
+async function importProjectZipUnlocked({ projectId, buffer, sourceName = "archive.zip" }, identity) {
   await requireProjectRole(projectId, identity.principalId, ["owner", "editor"]);
   const entries = extractZipEntries(buffer);
   const gitignore = entries.find((entry) => entry.relativePath === ".gitignore");
@@ -402,8 +406,21 @@ export async function importProjectZip({ projectId, buffer, sourceName = "archiv
       results.push({ ignored: true, relativePath: entry.relativePath, reason: "gitignore" });
       continue;
     }
-    try { results.push(await indexProjectFile({ projectId, relativePath: entry.relativePath, buffer: entry.data, sourceType: `zip:${sourceName}` }, identity)); }
-    catch (error) { results.push({ relativePath: entry.relativePath, error: error.message, code: error.code || "INDEX_ERROR" }); }
+    try {
+      results.push(await indexProjectFile({
+        projectId,
+        relativePath: entry.relativePath,
+        buffer: entry.data,
+        sourceType: `zip:${sourceName}`,
+        deferProjectFinalize: true,
+      }, identity));
+    } catch (error) {
+      results.push({ relativePath: entry.relativePath, error: error.message, code: error.code || "INDEX_ERROR" });
+    }
+  }
+  if (results.some((item) => item?.indexingStatus && !item?.unchanged && !item?.error)) {
+    await resolveProjectDependencies(projectId);
+    await touchProject(projectId);
   }
   return {
     total: entries.length,
@@ -412,6 +429,20 @@ export async function importProjectZip({ projectId, buffer, sourceName = "archiv
     failed: results.filter((item) => item?.error).length,
     results,
   };
+}
+
+export async function importProjectZip(options, identity) {
+  const previous = projectImportLocks.get(options.projectId) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  projectImportLocks.set(options.projectId, current);
+  await previous;
+  try {
+    return await importProjectZipUnlocked(options, identity);
+  } finally {
+    release();
+    if (projectImportLocks.get(options.projectId) === current) projectImportLocks.delete(options.projectId);
+  }
 }
 
 export async function listProjectFiles(projectId, principalId, { q = "", status = "", limit = 200, offset = 0 } = {}) {
