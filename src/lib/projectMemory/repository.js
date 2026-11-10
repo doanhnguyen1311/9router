@@ -13,6 +13,7 @@ import {
   normalizeDescription,
   normalizePrincipal,
   normalizeProjectName,
+  projectNameKey,
 } from "./config.js";
 import { hashApiKey } from "@/lib/apiKeyStorage.js";
 
@@ -23,6 +24,16 @@ function projectError(code, message, status = 400) {
   error.code = code;
   error.status = status;
   return error;
+}
+
+function rethrowProjectConstraint(error) {
+  if (error?.code === "PROJECT_LIMIT" || error?.code === "PROJECT_NAME_EXISTS") throw error;
+  const message = String(error?.message || error);
+  if (message.includes("PROJECT_LIMIT")) throw projectError("PROJECT_LIMIT", "Project limit reached", 409);
+  if (message.includes("projects.nameKey") || message.includes("idx_projects_name_key_unique")) {
+    throw projectError("PROJECT_NAME_EXISTS", "Project name already exists", 409);
+  }
+  throw error;
 }
 
 function systemRow(row) {
@@ -157,33 +168,37 @@ export async function createProject({ name, description = "" }, identity) {
   const access = await getEffectiveUserProjectAccess(identity.principalId);
   if (!access.effective) throw projectError("PROJECT_ACCESS_DISABLED", "Project access is disabled", 403);
   const db = await getAdapter();
-  const count = db.get("SELECT COUNT(*) AS count FROM projects WHERE ownerId = ? AND status <> 'archived'", [identity.principalId])?.count || 0;
-  if (count >= access.system.maxProjectsPerUser) throw projectError("PROJECT_LIMIT", "Project limit reached", 409);
-
   const id = uuidv4();
   const now = new Date().toISOString();
-  db.transaction(() => {
-    db.run(
-      "INSERT INTO projects(id, ownerId, name, description, status, version, createdAt, updatedAt, lastActivityAt) VALUES(?, ?, ?, ?, 'active', 1, ?, ?, ?)",
-      [id, identity.principalId, projectName, projectDescription, now, now, now],
-    );
-    db.run(
-      "INSERT INTO projectMembers(projectId, principalId, role, displayName, status, invitedBy, createdAt, updatedAt) VALUES(?, ?, 'owner', ?, 'active', ?, ?, ?)",
-      [id, identity.principalId, identity.displayName || null, identity.principalId, now, now],
-    );
-    db.run(
-      `INSERT INTO projectSettings(projectId, memoryEnabled, extractionEnabled, retrievalEnabled, fileIndexingEnabled,
-        contextTokenBudget, maxGraphDepth, retainSourceContent, ignoreRules, updatedAt)
-       VALUES(?, 1, 1, 1, 1, ?, ?, 1, '[]', ?)`,
-      [id, PROJECT_DEFAULTS.contextTokenBudget, PROJECT_DEFAULTS.maxGraphDepth, now],
-    );
-  });
+  try {
+    db.transaction(() => {
+      const count = db.get("SELECT COUNT(*) AS count FROM projects WHERE ownerId=? AND status<>'archived'", [identity.principalId])?.count || 0;
+      const limit = db.get("SELECT maxProjectsPerUser FROM projectSystemSettings WHERE id=1")?.maxProjectsPerUser ?? access.system.maxProjectsPerUser;
+      if (count >= limit) throw projectError("PROJECT_LIMIT", "Project limit reached", 409);
+      db.run(
+        "INSERT INTO projects(id, ownerId, name, nameKey, description, status, version, createdAt, updatedAt, lastActivityAt) VALUES(?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)",
+        [id, identity.principalId, projectName, projectNameKey(projectName), projectDescription, now, now, now],
+      );
+      db.run(
+        "INSERT INTO projectMembers(projectId, principalId, role, displayName, status, invitedBy, createdAt, updatedAt) VALUES(?, ?, 'owner', ?, 'active', ?, ?, ?)",
+        [id, identity.principalId, identity.displayName || null, identity.principalId, now, now],
+      );
+      db.run(
+        `INSERT INTO projectSettings(projectId, memoryEnabled, extractionEnabled, retrievalEnabled, fileIndexingEnabled,
+          contextTokenBudget, maxGraphDepth, retainSourceContent, ignoreRules, updatedAt)
+         VALUES(?, 1, 1, 1, 1, ?, ?, 1, '[]', ?)`,
+        [id, PROJECT_DEFAULTS.contextTokenBudget, PROJECT_DEFAULTS.maxGraphDepth, now],
+      );
+    });
+  } catch (error) {
+    rethrowProjectConstraint(error);
+  }
   return getProjectById(id, identity.principalId);
 }
 
 const PROJECT_STATS_SQL = `
   SELECT p.*,
-    COALESCE((SELECT role FROM projectMembers pm WHERE pm.projectId=p.id AND pm.principalId=? AND pm.status='active'), CASE WHEN p.ownerId=? THEN 'owner' END) AS role,
+    CASE WHEN p.ownerId=? THEN 'owner' ELSE (SELECT role FROM projectMembers pm WHERE pm.projectId=p.id AND pm.principalId=? AND pm.status='active') END AS role,
     (SELECT COUNT(*) FROM memoryItems mi WHERE mi.projectId=p.id AND mi.status IN ('active','pinned')) AS memoryCount,
     (SELECT COUNT(*) FROM memoryEntities me WHERE me.projectId=p.id) AS entityCount,
     (SELECT COUNT(*) FROM projectFiles pf WHERE pf.projectId=p.id) AS fileCount,
@@ -261,7 +276,11 @@ export async function updateProject(projectId, input, identity) {
   const status = Object.hasOwn(input, "status") ? input.status : current.status;
   if (!name || description == null || !PROJECT_STATUSES.includes(status)) throw projectError("INVALID_PROJECT", "Invalid project update");
   const now = new Date().toISOString();
-  db.run("UPDATE projects SET name=?, description=?, status=?, version=version+1, updatedAt=?, lastActivityAt=? WHERE id=?", [name, description, status, now, now, projectId]);
+  try {
+    db.run("UPDATE projects SET name=?, nameKey=?, description=?, status=?, version=version+1, updatedAt=?, lastActivityAt=? WHERE id=?", [name, projectNameKey(name), description, status, now, now, projectId]);
+  } catch (error) {
+    rethrowProjectConstraint(error);
+  }
   return getProjectById(projectId, identity.principalId);
 }
 
@@ -327,11 +346,15 @@ export async function transferProjectOwnership(projectId, newOwnerId, identity) 
   const member = db.get("SELECT status FROM projectMembers WHERE projectId=? AND principalId=?", [projectId, normalized]);
   if (member?.status !== "active") throw projectError("INVALID_OWNER", "New owner must be an active project member", 409);
   const now = new Date().toISOString();
-  db.transaction(() => {
-    db.run("UPDATE projects SET ownerId=?, version=version+1, updatedAt=? WHERE id=?", [normalized, now, projectId]);
-    db.run("UPDATE projectMembers SET role='editor', updatedAt=? WHERE projectId=? AND principalId=?", [now, projectId, identity.principalId]);
-    db.run("UPDATE projectMembers SET role='owner', updatedAt=? WHERE projectId=? AND principalId=?", [now, projectId, normalized]);
-  });
+  try {
+    db.transaction(() => {
+      db.run("UPDATE projects SET ownerId=?, version=version+1, updatedAt=? WHERE id=?", [normalized, now, projectId]);
+      db.run("UPDATE projectMembers SET role='editor', updatedAt=? WHERE projectId=? AND principalId=?", [now, projectId, identity.principalId]);
+      db.run("UPDATE projectMembers SET role='owner', updatedAt=? WHERE projectId=? AND principalId=?", [now, projectId, normalized]);
+    });
+  } catch (error) {
+    rethrowProjectConstraint(error);
+  }
   return getProjectById(projectId, normalized);
 }
 
@@ -375,7 +398,7 @@ export async function listAssignableProjectsForKey(keyRecord) {
   if (!keyRecord?.projectAccess) return [];
   const access = await getEffectiveUserProjectAccess(keyRecord.ownerId);
   if (!access.effective) return [];
-  return listProjects(keyRecord.ownerId);
+  return (await listProjects(keyRecord.ownerId)).filter((project) => ["owner", "editor"].includes(project.role));
 }
 
 export async function getApiKeyProjectAssignment(apiKeyId) {
@@ -407,6 +430,10 @@ export async function assignApiKeyToProject(apiKeyId, projectId, actor, { selfSe
   const principalId = selfService ? (key.ownerId || "local-admin") : actor?.principalId;
   if (!selfService && !actor?.admin && key.ownerId !== principalId) throw projectError("PROJECT_FORBIDDEN", "Only the API key owner or an administrator can assign it", 403);
   await requireProjectRole(projectId, principalId, ["owner", "editor"]);
+  const keyOwnerRole = await getProjectRole(projectId, key.ownerId);
+  if (!keyOwnerRole || !["owner", "editor"].includes(keyOwnerRole.role)) {
+    throw projectError("PROJECT_FORBIDDEN", "The API key owner cannot use this project", 403);
+  }
   const access = await getEffectiveUserProjectAccess(key.ownerId || principalId);
   if (!access.effective) throw projectError("PROJECT_ACCESS_DISABLED", "Project access is disabled", 403);
   const now = new Date().toISOString();
@@ -460,7 +487,12 @@ export async function resolveGatewayProject(apiKeyValue) {
      JOIN projectSystemSettings sys ON sys.id=1
      JOIN projectSettings ps ON ps.projectId=p.id
      LEFT JOIN projectPermissions perm ON perm.principalId=k.ownerId
-     WHERE (k.keyHash=? OR k.key=?) AND k.isActive=1 LIMIT 1`,
+     WHERE (k.keyHash=? OR k.key=?) AND k.isActive=1
+       AND (p.ownerId=k.ownerId OR EXISTS(
+         SELECT 1 FROM projectMembers pm WHERE pm.projectId=p.id AND pm.principalId=k.ownerId
+           AND pm.status='active' AND pm.role IN ('owner','editor')
+       ))
+     LIMIT 1`,
     [hashApiKey(apiKeyValue), apiKeyValue],
   );
   if (!row) return null;
@@ -501,8 +533,11 @@ export async function resolveGatewayProjectForKeyRecord(keyRecord) {
      JOIN projectSystemSettings sys ON sys.id=1
      JOIN projectSettings ps ON ps.projectId=p.id
      LEFT JOIN projectPermissions perm ON perm.principalId=?
-     WHERE p.id=? LIMIT 1`,
-    [keyRecord.ownerId, keyRecord.assignedProjectId],
+     WHERE p.id=? AND (p.ownerId=? OR EXISTS(
+       SELECT 1 FROM projectMembers pm WHERE pm.projectId=p.id AND pm.principalId=?
+         AND pm.status='active' AND pm.role IN ('owner','editor')
+     )) LIMIT 1`,
+    [keyRecord.ownerId, keyRecord.assignedProjectId, keyRecord.ownerId, keyRecord.ownerId],
   );
   if (!row) return null;
   const userEnabled = row.userEnabled == null ? bool(row.defaultUserAccess) : bool(row.userEnabled);

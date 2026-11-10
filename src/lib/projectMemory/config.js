@@ -51,6 +51,10 @@ export function normalizeProjectName(value) {
   return normalized;
 }
 
+export function projectNameKey(value) {
+  return value.toLowerCase();
+}
+
 export function normalizeDescription(value) {
   if (value == null) return "";
   if (typeof value !== "string") return null;

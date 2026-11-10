@@ -31,7 +31,9 @@ export default {
     for (const name of PROJECT_TABLES) {
       const def = TABLES[name];
       db.exec(buildCreateTableSql(name, def));
-      for (const index of def.indexes || []) db.exec(index);
+      for (const index of def.indexes || []) {
+        try { db.exec(index); } catch { /* later migrations may add referenced columns */ }
+      }
     }
     // FTS5 is optional at the driver level (not every sql.js build includes
     // it). The relational search path remains fully functional when this DDL

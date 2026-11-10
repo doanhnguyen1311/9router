@@ -87,6 +87,33 @@ describe("Schema migrations", () => {
     expect(aliases).toHaveLength(1);
   });
 
+  it("migration v3 preserves duplicate projects by renaming later rows before adding the unique key", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const migration = (await import("@/lib/db/migrations/003-project-constraints.js")).default;
+    const db = await getAdapter();
+    db.exec("DROP INDEX IF EXISTS idx_projects_name_key_unique");
+    db.run("DELETE FROM projects");
+    const longName = `Duplicate ${"x".repeat(110)}`;
+    db.run(
+      "INSERT INTO projects(id, ownerId, name, nameKey, description, status, version, createdAt, updatedAt, lastActivityAt) VALUES(?, ?, ?, NULL, '', 'active', 1, ?, ?, ?)",
+      ["older", "owner:a", `  ${longName}  `, "2025-01-01", "2025-01-01", "2025-01-01"],
+    );
+    db.run(
+      "INSERT INTO projects(id, ownerId, name, nameKey, description, status, version, createdAt, updatedAt, lastActivityAt) VALUES(?, ?, ?, NULL, '', 'active', 1, ?, ?, ?)",
+      ["newer", "owner:b", longName.toUpperCase(), "2025-01-02", "2025-01-02", "2025-01-02"],
+    );
+
+    migration.up(db);
+
+    const rows = db.all("SELECT id, name, nameKey FROM projects ORDER BY createdAt");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].name).toBe(longName);
+    expect(rows[1].name).toMatch(/ \(2\)$/);
+    expect(rows[1].name.length).toBeLessThanOrEqual(120);
+    expect(rows[0].nameKey).not.toBe(rows[1].nameKey);
+    expect(db.all("PRAGMA index_list(projects)").map((index) => index.name)).toContain("idx_projects_name_key_unique");
+  });
+
   it("auto-sync re-creates missing index when DB lacks it", async () => {
     const { getAdapter } = await import("@/lib/db/driver.js");
     const db = await getAdapter();

@@ -68,6 +68,55 @@ describe("Project Memory project and gateway contract", () => {
     expect((await repository.updateProject(project.id, { status: "active" }, owner)).status).toBe("active");
   });
 
+  it("enforces canonical project names and owner quota across create and transfer", async () => {
+    const { repository } = await boot();
+    const alice = { principalId: "user:alice", displayName: "Alice" };
+    const bob = { principalId: "user:bob", displayName: "Bob" };
+    const first = await repository.createProject({ name: "  Shared   Name  " }, alice);
+    const second = await repository.createProject({ name: "Other" }, bob);
+
+    await expect(repository.createProject({ name: "shared name" }, bob))
+      .rejects.toMatchObject({ code: "PROJECT_NAME_EXISTS", status: 409 });
+    await expect(repository.updateProject(second.id, { name: " SHARED  NAME " }, bob))
+      .rejects.toMatchObject({ code: "PROJECT_NAME_EXISTS", status: 409 });
+
+    await repository.updateProjectSystemSettings({ maxProjectsPerUser: 1 }, owner.principalId);
+    await expect(repository.createProject({ name: "Alice over quota" }, alice))
+      .rejects.toMatchObject({ code: "PROJECT_LIMIT", status: 409 });
+    await repository.upsertProjectMember(second.id, { principalId: alice.principalId, role: "editor" }, bob);
+    await expect(repository.transferProjectOwnership(second.id, alice.principalId, bob))
+      .rejects.toMatchObject({ code: "PROJECT_LIMIT", status: 409 });
+
+    await repository.updateProject(first.id, { status: "archived" }, alice);
+    expect((await repository.transferProjectOwnership(second.id, alice.principalId, bob)).ownerId).toBe(alice.principalId);
+  });
+
+  it("limits key assignment and runtime to current owner or active editors", async () => {
+    const { database, repository } = await boot();
+    const alice = { principalId: "user:key-owner", displayName: "Key Owner" };
+    const bob = { principalId: "user:project-owner", displayName: "Project Owner" };
+    const project = await repository.createProject({ name: "Runtime access" }, bob);
+    await repository.upsertProjectMember(project.id, { principalId: alice.principalId, role: "editor" }, bob);
+    const key = await database.createApiKey("role-runtime", "role-machine", undefined, undefined, alice.principalId);
+    await repository.assignApiKeyToProject(key.id, project.id, alice);
+    const record = await database.getApiKeyByKey(key.key);
+
+    expect((await repository.listAssignableProjectsForKey(record)).map((item) => item.id)).toContain(project.id);
+    expect(await repository.resolveGatewayProject(key.key)).not.toBeNull();
+    expect(await repository.resolveGatewayProjectForKeyRecord(record)).not.toBeNull();
+
+    await repository.upsertProjectMember(project.id, { principalId: alice.principalId, role: "viewer" }, bob);
+    expect((await repository.listAssignableProjectsForKey(record)).map((item) => item.id)).not.toContain(project.id);
+    expect(await repository.resolveGatewayProject(key.key)).toBeNull();
+    expect(await repository.resolveGatewayProjectForKeyRecord(record)).toBeNull();
+
+    await repository.upsertProjectMember(project.id, { principalId: alice.principalId, role: "editor" }, bob);
+    expect(await repository.resolveGatewayProjectForKeyRecord(record)).not.toBeNull();
+    await repository.removeProjectMember(project.id, alice.principalId, bob);
+    expect(await repository.resolveGatewayProject(key.key)).toBeNull();
+    expect(await repository.resolveGatewayProjectForKeyRecord(record)).toBeNull();
+  });
+
   it("leaves unassigned API keys on the old path and persists assigned client sessions", async () => {
     const { database, repository, runtime, adapter } = await boot();
     const key = await database.createApiKey("project-test", "test-machine");
