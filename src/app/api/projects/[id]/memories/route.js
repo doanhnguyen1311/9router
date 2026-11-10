@@ -1,4 +1,4 @@
-import { createManualMemory, listMemories } from "@/lib/projectMemory/memoryRepository.js";
+import { createManualMemory, deleteProjectMemories, listMemories } from "@/lib/projectMemory/memoryRepository.js";
 import { projectErrorResponse, projectJson, requireIdentity } from "../../_response.js";
 
 export async function GET(request, { params }) {
@@ -15,5 +15,13 @@ export async function POST(request, { params }) {
     const identity = await requireIdentity(request);
     const { id } = await params;
     return projectJson({ memory: await createManualMemory(id, await request.json(), identity) }, 201);
+  } catch (error) { return projectErrorResponse(error); }
+}
+
+export async function DELETE(request, { params }) {
+  try {
+    const identity = await requireIdentity(request);
+    const { id } = await params;
+    return projectJson({ deleted: await deleteProjectMemories(id, identity) });
   } catch (error) { return projectErrorResponse(error); }
 }

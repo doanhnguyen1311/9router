@@ -12,8 +12,9 @@ async function boot() {
   vi.resetModules();
   const repository = await import("@/lib/projectMemory/repository.js");
   const files = await import("@/lib/projectMemory/fileIntelligence.js");
+  const graph = await import("@/lib/projectMemory/graphRepository.js");
   const { getAdapter } = await import("@/lib/db/driver.js");
-  return { repository, files, adapter: await getAdapter() };
+  return { repository, files, graph, adapter: await getAdapter() };
 }
 
 function crc32(buffer) {
@@ -146,6 +147,53 @@ describe("Project file intelligence", () => {
     expect(fs.existsSync(dependencyStoragePath)).toBe(true);
     expect(await repository.deleteProject(project.id, owner, project.name)).toBe(true);
     expect(fs.existsSync(dependencyStoragePath)).toBe(false);
+  });
+
+  it("clears all indexed files, derived data, search documents, and retained sources", async () => {
+    const { repository, files, graph, adapter } = await boot();
+    const project = await repository.createProject({ name: "Clear files" }, owner);
+    const other = await repository.createProject({ name: "Keep files" }, owner);
+    const viewer = { principalId: "user:file-viewer" };
+    await repository.upsertProjectMember(project.id, { principalId: viewer.principalId, role: "viewer" }, owner);
+
+    const dependency = await files.indexProjectFile({
+      projectId: project.id, relativePath: "src/db.ts",
+      buffer: Buffer.from("export function connect() { return true; }"),
+    }, owner);
+    await files.indexProjectFile({
+      projectId: project.id, relativePath: "src/app.ts",
+      buffer: Buffer.from('import { connect } from "./db"; export function start() { return connect(); }'),
+    }, owner);
+    const otherFile = await files.indexProjectFile({
+      projectId: other.id, relativePath: "src/keep.ts", buffer: Buffer.from("export const keep = true;"),
+    }, owner);
+    const storagePath = adapter.get("SELECT storagePath FROM projectFiles WHERE id=?", [dependency.id]).storagePath;
+
+    adapter.transaction(() => {
+      for (let index = 0; index < 510; index += 1) {
+        graph.upsertEntityInTransaction(adapter, {
+          projectId: project.id, entityType: "symbol", name: `Generated ${index}`,
+          metadata: { fileId: dependency.id }, sourceType: "imported-file",
+        });
+      }
+    });
+
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectFiles WHERE projectId=?", [project.id]).count).toBe(2);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectSymbols WHERE projectId=?", [project.id]).count).toBeGreaterThan(0);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectFileDependencies WHERE projectId=?", [project.id]).count).toBe(1);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectSearch WHERE projectId=? AND kind='file'", [project.id]).count).toBe(2);
+    expect(fs.existsSync(storagePath)).toBe(true);
+    await expect(files.removeAllProjectFiles(project.id, viewer)).rejects.toMatchObject({ code: "PROJECT_FORBIDDEN" });
+
+    expect(await files.removeAllProjectFiles(project.id, owner)).toBe(2);
+    for (const table of ["projectFiles", "projectSymbols", "projectFileDependencies"]) {
+      expect(adapter.get(`SELECT COUNT(*) AS count FROM ${table} WHERE projectId=?`, [project.id]).count).toBe(0);
+    }
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectSearch WHERE projectId=? AND kind='file'", [project.id]).count).toBe(0);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM memoryEntities WHERE projectId=?", [project.id]).count).toBe(0);
+    expect(fs.existsSync(path.dirname(storagePath))).toBe(false);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectFiles WHERE id=?", [otherFile.id]).count).toBe(1);
+    expect(adapter.all("PRAGMA foreign_key_check")).toEqual([]);
   });
 
   it("imports a valid ZIP but ignores secret files", async () => {

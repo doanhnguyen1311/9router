@@ -4,7 +4,7 @@ import { getAdapter } from "@/lib/db/driver.js";
 import { parseJson, stringifyJson } from "@/lib/db/helpers/jsonCol.js";
 import { MEMORY_STATUSES, MEMORY_TYPES } from "./config.js";
 import { projectError, requireProjectRole } from "./repository.js";
-import { removeSearchDocumentInTransaction, upsertSearchDocumentInTransaction } from "./searchIndex.js";
+import { removeSearchDocumentInTransaction, removeSearchDocumentsInTransaction, upsertSearchDocumentInTransaction } from "./searchIndex.js";
 import { redactProjectText } from "./privacy.js";
 
 const SOURCE_PRIORITY = Object.freeze({ inferred: 1, "assistant-suggested": 2, "imported-file": 3, "user-confirmed": 4, "tool-verified": 5 });
@@ -158,6 +158,17 @@ export async function deleteMemory(projectId, memoryId, identity) {
   db.transaction(() => {
     deleted = (db.run("DELETE FROM memoryItems WHERE id=? AND projectId=?", [memoryId, projectId])?.changes || 0) > 0;
     if (deleted) removeSearchDocumentInTransaction(db, projectId, "memory", memoryId);
+  });
+  return deleted;
+}
+
+export async function deleteProjectMemories(projectId, identity) {
+  await requireProjectRole(projectId, identity.principalId, ["owner", "editor"]);
+  const db = await getAdapter();
+  let deleted = 0;
+  db.transaction(() => {
+    deleted = db.run("DELETE FROM memoryItems WHERE projectId=?", [projectId])?.changes || 0;
+    removeSearchDocumentsInTransaction(db, projectId, "memory");
   });
   return deleted;
 }

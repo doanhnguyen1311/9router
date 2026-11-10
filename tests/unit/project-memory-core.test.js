@@ -14,11 +14,12 @@ async function boot() {
   const database = await import("@/lib/db/index.js");
   const repository = await import("@/lib/projectMemory/repository.js");
   const memory = await import("@/lib/projectMemory/memoryRepository.js");
+  const graph = await import("@/lib/projectMemory/graphRepository.js");
   const queue = await import("@/lib/projectMemory/queue.js");
   const retrieval = await import("@/lib/projectMemory/retrieval.js");
   const runtime = await import("@/lib/projectMemory/runtime.js");
   const { getAdapter } = await import("@/lib/db/driver.js");
-  return { database, repository, memory, queue, retrieval, runtime, adapter: await getAdapter() };
+  return { database, repository, memory, graph, queue, retrieval, runtime, adapter: await getAdapter() };
 }
 
 function stopScheduledWorker() {
@@ -66,6 +67,75 @@ describe("Project Memory project and gateway contract", () => {
     await expect(repository.updateProject(project.id, { status: "active" }, { principalId: "user:viewer" }))
       .rejects.toMatchObject({ code: "PROJECT_FORBIDDEN" });
     expect((await repository.updateProject(project.id, { status: "active" }, owner)).status).toBe("active");
+  });
+
+  it("clears graph, memories, and sessions with cascades, isolation, and editor-only access", async () => {
+    const { repository, memory, graph, queue, retrieval, adapter } = await boot();
+    const project = await repository.createProject({ name: "Clear collections" }, owner);
+    const other = await repository.createProject({ name: "Keep collections" }, owner);
+    const viewer = { principalId: "user:clear-viewer" };
+    await repository.upsertProjectMember(project.id, { principalId: viewer.principalId, role: "viewer" }, owner);
+
+    const item = await memory.createManualMemory(project.id, {
+      memoryType: "decision", subject: "Database", value: "SQLite",
+    }, owner);
+    await memory.updateMemory(project.id, item.id, { value: "SQLite WAL" }, owner);
+    await memory.createManualMemory(other.id, {
+      memoryType: "decision", subject: "Other database", value: "PostgreSQL",
+    }, owner);
+
+    let firstEntity;
+    adapter.transaction(() => {
+      firstEntity = graph.upsertEntityInTransaction(adapter, {
+        projectId: project.id, entityType: "concept", name: "Router", sourceType: "tool-verified",
+      });
+      const secondEntity = graph.upsertEntityInTransaction(adapter, {
+        projectId: project.id, entityType: "concept", name: "Gateway", sourceType: "tool-verified",
+      });
+      graph.upsertRelationInTransaction(adapter, {
+        projectId: project.id, fromEntityId: firstEntity.id, toEntityId: secondEntity.id,
+        relationType: "uses", evidenceType: "tool-verified",
+      });
+      graph.upsertEntityInTransaction(adapter, {
+        projectId: other.id, entityType: "concept", name: "Other graph", sourceType: "tool-verified",
+      });
+    });
+
+    const session = await repository.resolvePersistentSession({
+      projectId: project.id, clientNamespace: "test", clientSessionId: "clear-me",
+    });
+    const otherSession = await repository.resolvePersistentSession({
+      projectId: other.id, clientNamespace: "test", clientSessionId: "keep-me",
+    });
+    adapter.run("UPDATE memoryItems SET sourceSessionId=? WHERE id=?", [session.id, item.id]);
+    const event = await queue.enqueueMemoryEvent({
+      projectId: project.id, sessionId: session.id, eventType: "tool-result",
+      sourceType: "tool-verified", payload: { text: "Session evidence" },
+    });
+    stopScheduledWorker();
+    await retrieval.saveContextSnapshot({ projectId: project.id, sessionId: session.id, content: "context", tokenEstimate: 1 });
+    await retrieval.recordMemoryUsage({ projectId: project.id, sessionId: session.id, operation: "retrieval" });
+
+    await expect(graph.deleteProjectGraph(project.id, viewer)).rejects.toMatchObject({ code: "PROJECT_FORBIDDEN" });
+    await expect(memory.deleteProjectMemories(project.id, viewer)).rejects.toMatchObject({ code: "PROJECT_FORBIDDEN" });
+    await expect(repository.deleteProjectSessions(project.id, viewer)).rejects.toMatchObject({ code: "PROJECT_FORBIDDEN" });
+
+    expect(await repository.deleteProjectSessions(project.id, owner)).toBe(1);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM contextSnapshots WHERE projectId=?", [project.id]).count).toBe(0);
+    expect(adapter.get("SELECT sessionId FROM memoryEvents WHERE id=?", [event.eventId]).sessionId).toBeNull();
+    expect(adapter.get("SELECT sourceSessionId FROM memoryItems WHERE id=?", [item.id]).sourceSessionId).toBeNull();
+    expect(adapter.get("SELECT sessionId FROM memoryUsage WHERE projectId=?", [project.id]).sessionId).toBeNull();
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectSessions WHERE id=?", [otherSession.id]).count).toBe(1);
+
+    expect(await graph.deleteProjectGraph(project.id, owner)).toBe(2);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM memoryRelations WHERE projectId=?", [project.id]).count).toBe(0);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM memoryEntities WHERE projectId=?", [other.id]).count).toBe(1);
+
+    expect(await memory.deleteProjectMemories(project.id, owner)).toBe(1);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM memoryItemHistory WHERE projectId=?", [project.id]).count).toBe(0);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM projectSearch WHERE projectId=? AND kind='memory'", [project.id]).count).toBe(0);
+    expect(adapter.get("SELECT COUNT(*) AS count FROM memoryItems WHERE projectId=?", [other.id]).count).toBe(1);
+    expect(adapter.all("PRAGMA foreign_key_check")).toEqual([]);
   });
 
   it("enforces canonical project names and owner quota across create and transfer", async () => {

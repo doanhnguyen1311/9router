@@ -690,6 +690,12 @@ export async function listProjectSessions(projectId, principalId, limit = 100) {
   );
 }
 
+export async function deleteProjectSessions(projectId, identity) {
+  await requireProjectRole(projectId, identity.principalId, ["owner", "editor"]);
+  const db = await getAdapter();
+  return db.run("DELETE FROM projectSessions WHERE projectId=?", [projectId])?.changes || 0;
+}
+
 export async function touchProject(projectId) {
   const db = await getAdapter();
   db.run("UPDATE projects SET lastActivityAt=?, updatedAt=? WHERE id=?", [new Date().toISOString(), new Date().toISOString(), projectId]);

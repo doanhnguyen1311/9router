@@ -19,7 +19,7 @@ import {
   getProjectSettings,
 } from "./repository.js";
 import { upsertEntityInTransaction, upsertRelationInTransaction } from "./graphRepository.js";
-import { removeSearchDocumentInTransaction, upsertSearchDocumentInTransaction } from "./searchIndex.js";
+import { removeSearchDocumentInTransaction, removeSearchDocumentsInTransaction, upsertSearchDocumentInTransaction } from "./searchIndex.js";
 import { redactProjectText } from "./privacy.js";
 
 const STORAGE_ROOT = path.join(DATA_DIR, "project-memory", "files");
@@ -431,18 +431,22 @@ async function importProjectZipUnlocked({ projectId, buffer, sourceName = "archi
   };
 }
 
-export async function importProjectZip(options, identity) {
-  const previous = projectImportLocks.get(options.projectId) || Promise.resolve();
+async function withProjectFileLock(projectId, action) {
+  const previous = projectImportLocks.get(projectId) || Promise.resolve();
   let release;
   const current = new Promise((resolve) => { release = resolve; });
-  projectImportLocks.set(options.projectId, current);
+  projectImportLocks.set(projectId, current);
   await previous;
   try {
-    return await importProjectZipUnlocked(options, identity);
+    return await action();
   } finally {
     release();
-    if (projectImportLocks.get(options.projectId) === current) projectImportLocks.delete(options.projectId);
+    if (projectImportLocks.get(projectId) === current) projectImportLocks.delete(projectId);
   }
+}
+
+export async function importProjectZip(options, identity) {
+  return withProjectFileLock(options.projectId, () => importProjectZipUnlocked(options, identity));
 }
 
 export async function listProjectFiles(projectId, principalId, { q = "", status = "", limit = 200, offset = 0 } = {}) {
@@ -534,6 +538,29 @@ export async function removeProjectFile(projectId, fileId, identity) {
   await resolveProjectDependencies(projectId);
   await touchProject(projectId);
   return true;
+}
+
+export async function removeAllProjectFiles(projectId, identity) {
+  await requireProjectRole(projectId, identity.principalId, ["owner", "editor"]);
+  return withProjectFileLock(projectId, async () => {
+    const db = await getAdapter();
+    const fileIds = new Set(db.all("SELECT id FROM projectFiles WHERE projectId=?", [projectId]).map((file) => file.id));
+    let deleted = 0;
+    db.transaction(() => {
+      const entityIds = db.all("SELECT id, metadata FROM memoryEntities WHERE projectId=?", [projectId])
+        .filter((entity) => fileIds.has(parseJson(entity.metadata, {}).fileId))
+        .map((entity) => entity.id);
+      for (let offset = 0; offset < entityIds.length; offset += 500) {
+        const batch = entityIds.slice(offset, offset + 500);
+        db.run(`DELETE FROM memoryEntities WHERE projectId=? AND id IN (${batch.map(() => "?").join(",")})`, [projectId, ...batch]);
+      }
+      deleted = db.run("DELETE FROM projectFiles WHERE projectId=?", [projectId])?.changes || 0;
+      removeSearchDocumentsInTransaction(db, projectId, "file");
+    });
+    try { fs.rmSync(path.join(STORAGE_ROOT, projectId), { recursive: true, force: true }); } catch { /* already absent */ }
+    await touchProject(projectId);
+    return deleted;
+  });
 }
 
 export async function reindexProjectFile(projectId, fileId, identity) {

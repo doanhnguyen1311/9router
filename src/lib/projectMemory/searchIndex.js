@@ -27,6 +27,12 @@ export function removeSearchDocumentInTransaction(db, projectId, kind, refId) {
   return true;
 }
 
+export function removeSearchDocumentsInTransaction(db, projectId, kind) {
+  if (!ensureProjectSearch(db)) return false;
+  db.run("DELETE FROM projectSearch WHERE projectId=? AND kind=?", [projectId, kind]);
+  return true;
+}
+
 export function searchProjectIndex(db, projectId, terms, limit = 100) {
   if (!ensureProjectSearch(db) || !Array.isArray(terms) || !terms.length) return [];
   const query = terms.map((term) => `"${String(term).replace(/"/g, '""')}"*`).join(" OR ");

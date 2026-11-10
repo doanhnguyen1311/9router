@@ -90,3 +90,9 @@ export async function graphStats(projectId) {
     relationships: db.get("SELECT COUNT(*) AS count FROM memoryRelations WHERE projectId=? AND status='active'", [projectId])?.count || 0,
   };
 }
+
+export async function deleteProjectGraph(projectId, identity) {
+  await requireProjectRole(projectId, identity.principalId, ["owner", "editor"]);
+  const db = await getAdapter();
+  return db.run("DELETE FROM memoryEntities WHERE projectId=?", [projectId])?.changes || 0;
+}
