@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import { createHash } from "node:crypto";
 import { getAdapter } from "@/lib/db/driver.js";
 import { parseJson } from "@/lib/db/helpers/jsonCol.js";
 import { redactProjectText } from "@/lib/projectMemory/privacy.js";
@@ -34,6 +35,12 @@ function parseRevisionRow(row) {
 
 function parseAuditRow(row) {
   return row ? { ...row, metadata: parseJson(row.metadata, {}) } : null;
+}
+
+function parseApprovalRow(row) {
+  if (!row) return null;
+  const { nonceHash: _nonceHash, ...approval } = row;
+  return approval;
 }
 
 function audit(db, { planId, projectId, actorId, eventType, fromStatus = null, toStatus = null, planVersion, metadata = {} }) {
@@ -250,6 +257,7 @@ export async function getPlan(projectId, planId, identity, { includeHistory = tr
   if (includeHistory) {
     plan.revisions = db.all("SELECT * FROM planRevisions WHERE planId=? ORDER BY revision DESC", [planId]).map(parseRevisionRow);
     plan.auditLog = db.all("SELECT * FROM planAuditLogs WHERE planId=? ORDER BY createdAt, rowid", [planId]).map(parseAuditRow);
+    plan.approval = parseApprovalRow(db.get("SELECT * FROM planApprovals WHERE planId=?", [planId]));
   }
   return plan;
 }
@@ -352,6 +360,77 @@ export async function requestPlanApproval({ projectId, planId, expectedVersion }
   });
 }
 
+export async function decidePlanApproval({
+  projectId,
+  planId,
+  expectedVersion,
+  optionId,
+  scope,
+  idempotencyKey,
+  decision,
+  reason = "",
+}, identity) {
+  await requireWrite(projectId, identity);
+  const db = await getAdapter();
+  let result;
+  db.transaction(() => {
+    const current = assertPlan(expirePlanInTransaction(
+      db,
+      db.get("SELECT * FROM executionPlans WHERE id=? AND projectId=?", [planId, projectId]),
+    ), expectedVersion);
+    if (current.status !== "PENDING_APPROVAL") {
+      throw planningError("PLAN_STATE_CONFLICT", `Plan cannot be ${decision.toLowerCase()} from ${current.status}`, 409);
+    }
+    if (scope !== "EXECUTE_APPROVED_PLAN") {
+      throw planningError("PLAN_APPROVAL_SCOPE_INVALID", "Approval scope must be EXECUTE_APPROVED_PLAN", 400);
+    }
+    if (current.selectedOptionId !== optionId) {
+      throw planningError("PLAN_OPTION_INVALID", "Approval must reference the selected option", 409);
+    }
+    const option = db.get(
+      "SELECT id FROM planOptions WHERE id=? AND planId=? AND revision=?",
+      [optionId, planId, current.currentRevision],
+    );
+    if (!option) throw planningError("PLAN_OPTION_INVALID", "Selected option does not belong to the current revision", 409);
+    if (db.get("SELECT id FROM planApprovals WHERE planId=?", [planId])) {
+      throw planningError("PLAN_APPROVAL_CONFLICT", "Plan already has an approval decision", 409);
+    }
+    const nonceHash = createHash("sha256")
+      .update(`${identity.principalId}\u0000${idempotencyKey}`)
+      .digest("hex");
+    if (db.get("SELECT id FROM planApprovals WHERE nonceHash=?", [nonceHash])) {
+      throw planningError("PLAN_APPROVAL_REPLAY", "Approval idempotency key was already used", 409);
+    }
+    const now = new Date().toISOString();
+    db.run(
+      `INSERT INTO planApprovals(
+        id, planId, projectId, revision, planVersion, optionId, decision, scope, actorId, nonceHash, reason, createdAt
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        uuidv4(), planId, projectId, current.currentRevision, current.version, optionId,
+        decision, scope, identity.principalId, nonceHash, reason, now,
+      ],
+    );
+    const changed = db.run(
+      "UPDATE executionPlans SET status=?, version=version+1, updatedAt=? WHERE id=? AND projectId=? AND version=? AND status='PENDING_APPROVAL'",
+      [decision, now, planId, projectId, expectedVersion],
+    )?.changes || 0;
+    if (!changed) throw planningError("PLAN_VERSION_CONFLICT", "Plan version is stale", 409);
+    audit(db, {
+      planId,
+      projectId,
+      actorId: identity.principalId,
+      eventType: decision === "APPROVED" ? "PLAN_APPROVED" : "PLAN_REJECTED",
+      fromStatus: current.status,
+      toStatus: decision,
+      planVersion: expectedVersion + 1,
+      metadata: { revision: current.currentRevision, optionId, scope, reason },
+    });
+    result = db.get("SELECT * FROM executionPlans WHERE id=?", [planId]);
+  });
+  return parsePlanRow(result);
+}
+
 export async function cancelPlan({ projectId, planId, expectedVersion, reason = "" }, identity) {
   return mutateWithVersion({
     projectId, planId, expectedVersion, identity,
@@ -369,4 +448,4 @@ export async function cancelPlan({ projectId, planId, expectedVersion, reason = 
   });
 }
 
-export const __test__ = { parsePlanRow, parseOptionRow, parseRevisionRow };
+export const __test__ = { parsePlanRow, parseOptionRow, parseRevisionRow, parseApprovalRow };

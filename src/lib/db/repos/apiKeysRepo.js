@@ -28,6 +28,12 @@ import {
   validateV2ProxyInput,
 } from "@/lib/v2ProxyConfig.js";
 import { hashApiKey, protectApiKey, revealApiKey } from "@/lib/apiKeyStorage.js";
+import {
+  KEY_PLANNING_DEFAULT,
+  keyPlanningFromColumns,
+  keyPlanningToColumns,
+  validateKeyPlanningInput,
+} from "@/shared/utils/keyPlanning.js";
 
 function quotaFromRow(row) {
   return keyQuotaFromColumns(
@@ -68,6 +74,7 @@ function rowToKey(row) {
     createdProjectCount: Number(row.createdProjectCount || 0),
     assignedProjectId: row.assignedProjectId || null,
     linkedProjects: Array.isArray(row.linkedProjects) ? row.linkedProjects : [],
+    planning: keyPlanningFromColumns(row),
     v2Proxy: v2ProxySummaryFromRow(row),
     quota,
     isExpired: isKeyQuotaExpired(quota),
@@ -399,6 +406,7 @@ export async function createApiKey(name, machineId, quota = KEY_QUOTA_UNLIMITED,
     createdProjectCount: 0,
     assignedProjectId: null,
     linkedProjects: [],
+    planning: { ...KEY_PLANNING_DEFAULT },
     v2Proxy: { enabled: v2Proxy.enabled, configured: v2Proxy.enabled },
     quota: normalizedQuota,
     isExpired: isKeyQuotaExpired(normalizedQuota),
@@ -486,6 +494,20 @@ export async function updateApiKey(id, data, options = {}) {
         throw error;
       }
     }
+    if (data.planning !== undefined) {
+      if (options.keyUsageSelfService === true) {
+        const error = new Error("Planning configuration is controlled by the administrator");
+        error.code = "KEY_USAGE_FORBIDDEN";
+        throw error;
+      }
+      const checked = validateKeyPlanningInput(data.planning);
+      if (!checked.ok) {
+        const error = new Error(checked.error);
+        error.code = "INVALID_KEY_PLANNING";
+        throw error;
+      }
+      data = { ...data, planning: checked.value };
+    }
     const nextQuota = data.quota ? { ...current.quota, ...data.quota } : current.quota;
     const merged = { ...current, ...data, quota: nextQuota };
     if (data.selectedEffort !== undefined) {
@@ -526,6 +548,7 @@ export async function updateApiKey(id, data, options = {}) {
     const cols = keyAccessToColumns(merged.access);
     const routingCols = keyModelRoutingToColumns(merged.modelRouting);
     const quotaCols = keyQuotaToColumns(merged.quota);
+    const planningCols = keyPlanningToColumns(merged.planning).value;
     const scheduleChanged = current.quota.resetMode !== merged.quota.resetMode
       || current.quota.resetInterval !== merged.quota.resetInterval
       || current.quota.resetIntervalValue !== merged.quota.resetIntervalValue
@@ -560,6 +583,9 @@ export async function updateApiKey(id, data, options = {}) {
         modelAlias = ?, selectedModel = ?, effortPolicy = ?,
         allowKeyUsage = ?, allowKeyUsageModelList = ?,
         projectAccess = ?, maxProjects = ?,
+        planningEnabled = ?, planningMode = ?, planningProviderId = ?, planningModelId = ?,
+        planningApprovalRequired = ?, planningContextTokenBudget = ?,
+        planningPlanExpirationMinutes = ?, planningFailurePolicy = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
         quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
@@ -572,6 +598,10 @@ export async function updateApiKey(id, data, options = {}) {
         JSON.stringify(merged.effortPolicy),
         merged.allowKeyUsage ? 1 : 0, merged.allowKeyUsageModelList ? 1 : 0,
         merged.projectAccess ? 1 : 0, merged.maxProjects === undefined ? null : merged.maxProjects,
+        planningCols.planningEnabled, planningCols.planningMode,
+        planningCols.planningProviderId, planningCols.planningModelId,
+        planningCols.planningApprovalRequired, planningCols.planningContextTokenBudget,
+        planningCols.planningPlanExpirationMinutes, planningCols.planningFailurePolicy,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
         quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,

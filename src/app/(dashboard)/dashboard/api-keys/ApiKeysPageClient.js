@@ -14,6 +14,7 @@ const KEY_SYNC_FALLBACK_MS = 30000;
 
 const MANAGE_TABS = [
   { id: "general", label: "General", icon: "tune" },
+  { id: "planning", label: "Planning", icon: "edit_note" },
   { id: "access", label: "Model Access", icon: "lock_open" },
   { id: "effort", label: "Effort", icon: "psychology" },
   { id: "quota", label: "Quota & Usage", icon: "data_usage" },
@@ -96,6 +97,8 @@ export default function ApiKeysPageClient() {
   const [maxProjectsMode, setMaxProjectsMode] = useState("default"); // "default" | "disabled" | "custom"
   const [maxProjectsDraft, setMaxProjectsDraft] = useState("3");
   const [savingProjectLimit, setSavingProjectLimit] = useState(false);
+  const [planningDraft, setPlanningDraft] = useState(null);
+  const [savingPlanning, setSavingPlanning] = useState(false);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
@@ -348,6 +351,23 @@ export default function ApiKeysPageClient() {
     }
   };
 
+  const savePlanning = async (key, next = planningDraft) => {
+    if (!key || !next) return;
+    setActionError("");
+    setSavingPlanning(true);
+    try {
+      const planning = {
+        ...next,
+        planningEnabled: next.planningMode !== "OFF",
+        contextTokenBudget: Number(next.contextTokenBudget),
+        planExpiration: Number(next.planExpiration),
+      };
+      const result = await updateKey(key.id, { planning });
+      if (!result.ok) setActionError(result.error || "Failed to save Planning configuration");
+      else setPlanningDraft(planning);
+    } finally { setSavingPlanning(false); }
+  };
+
   const projectMap = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
   const filteredKeys = useMemo(() => {
@@ -376,6 +396,16 @@ export default function ApiKeysPageClient() {
     setActionError("");
     setManageTab(tab);
     syncMaxProjectsControls(key);
+    setPlanningDraft({
+      planningEnabled: key.planning?.planningEnabled === true,
+      planningMode: key.planning?.planningMode || "OFF",
+      planningProviderId: key.planning?.planningProviderId || "",
+      planningModelId: key.planning?.planningModelId || "",
+      approvalRequired: key.planning?.approvalRequired !== false,
+      contextTokenBudget: key.planning?.contextTokenBudget || 1800,
+      planExpiration: key.planning?.planExpiration || 10080,
+      failurePolicy: key.planning?.failurePolicy || "FAIL_CLOSED",
+    });
     setManageKeyId(key.id);
   };
 
@@ -819,6 +849,38 @@ export default function ApiKeysPageClient() {
                     },
                   })}
                 />
+              )}
+
+              {manageTab === "planning" && planningDraft && (
+                <div className="space-y-4">
+                  <section className="rounded-xl border border-border bg-surface-2/40 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div><h3 className="text-sm font-semibold text-text-main">Project-aware Planning</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-text-muted">OFF preserves the existing request pipeline. MANUAL enables explicit planning tasks. ADAPTIVE may suggest planning, but never changes a legacy response protocol or executes without approval.</p></div><Badge tone={planningDraft.planningMode === "OFF" ? "muted" : "green"}>{planningDraft.planningMode}</Badge>
+                    </div>
+                    <div className="mt-4 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Planning mode">
+                      {[
+                        ["OFF", "Off", "Legacy behavior only"],
+                        ["MANUAL", "Manual", "User starts each plan"],
+                        ["ADAPTIVE", "Adaptive", "Suggest planning when useful"],
+                      ].map(([value, label, help]) => <button key={value} type="button" role="radio" aria-checked={planningDraft.planningMode === value} onClick={() => setPlanningDraft((current) => ({ ...current, planningMode: value, planningEnabled: value !== "OFF" }))} className={`rounded-xl border p-3 text-left transition ${planningDraft.planningMode === value ? "border-primary bg-primary/5" : "border-border bg-surface hover:border-primary/40"}`}><span className="block text-xs font-semibold text-text-main">{label}</span><span className="mt-1 block text-[10px] text-text-muted">{help}</span></button>)}
+                    </div>
+                  </section>
+
+                  <section className="grid gap-4 rounded-xl border border-border p-4 sm:grid-cols-2">
+                    <label className="text-xs font-semibold text-text-main">Planning provider ID<input value={planningDraft.planningProviderId} onChange={(event) => setPlanningDraft((current) => ({ ...current, planningProviderId: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" placeholder="Configured provider" /></label>
+                    <label className="text-xs font-semibold text-text-main">Planning model ID<input value={planningDraft.planningModelId} onChange={(event) => setPlanningDraft((current) => ({ ...current, planningModelId: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" placeholder="Configured model" /></label>
+                    <label className="text-xs font-semibold text-text-main">Context token budget<input type="number" min="256" max="16000" value={planningDraft.contextTokenBudget} onChange={(event) => setPlanningDraft((current) => ({ ...current, contextTokenBudget: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" /></label>
+                    <label className="text-xs font-semibold text-text-main">Plan expiration (minutes)<input type="number" min="5" max="43200" value={planningDraft.planExpiration} onChange={(event) => setPlanningDraft((current) => ({ ...current, planExpiration: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" /></label>
+                    <label className="text-xs font-semibold text-text-main">Failure policy<select value={planningDraft.failurePolicy} onChange={(event) => setPlanningDraft((current) => ({ ...current, failurePolicy: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50"><option value="FAIL_CLOSED">Fail closed</option><option value="LEGACY_PATH">Continue legacy path</option></select></label>
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3"><div><p className="text-xs font-semibold text-text-main">Human approval required</p><p className="mt-0.5 text-[10px] text-text-muted">Execution cannot begin from chat text alone.</p></div><Toggle size="sm" checked={planningDraft.approvalRequired} disabled={planningDraft.planningMode === "OFF"} onChange={(checked) => setPlanningDraft((current) => ({ ...current, approvalRequired: checked }))} /></div>
+                  </section>
+
+                  <section className="rounded-xl border border-border bg-surface-2/40 p-4 text-xs">
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Assigned Project</span><span className="font-medium text-text-main">{managedKey.assignedProjectId ? projectMap.get(managedKey.assignedProjectId)?.name || managedKey.assignedProjectId : "None"}</span></div><p className="mt-2 text-[10px] leading-5 text-text-muted">Planning still requires Project membership and backend RBAC. Assigning a Project here does not grant access by itself.</p>
+                  </section>
+
+                  <div className="flex justify-end"><Button loading={savingPlanning} onClick={() => void savePlanning(managedKey)}>Save Planning settings</Button></div>
+                </div>
               )}
 
               {manageTab === "effort" && (

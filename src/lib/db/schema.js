@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -126,6 +126,16 @@ export const TABLES = {
       ownerId: "TEXT DEFAULT 'local-admin'",
       projectAccess: "INTEGER NOT NULL DEFAULT 1",
       maxProjects: "INTEGER",
+      // Planning is deliberately disabled for every pre-existing and newly
+      // created key until an administrator opts the key in.
+      planningEnabled: "INTEGER NOT NULL DEFAULT 0 CHECK (planningEnabled IN (0,1))",
+      planningMode: "TEXT NOT NULL DEFAULT 'OFF' CHECK (planningMode IN ('OFF','MANUAL','ADAPTIVE'))",
+      planningProviderId: "TEXT",
+      planningModelId: "TEXT",
+      planningApprovalRequired: "INTEGER NOT NULL DEFAULT 1 CHECK (planningApprovalRequired IN (0,1))",
+      planningContextTokenBudget: "INTEGER NOT NULL DEFAULT 1800 CHECK (planningContextTokenBudget BETWEEN 256 AND 16000)",
+      planningPlanExpirationMinutes: "INTEGER NOT NULL DEFAULT 10080 CHECK (planningPlanExpirationMinutes BETWEEN 5 AND 43200)",
+      planningFailurePolicy: "TEXT NOT NULL DEFAULT 'FAIL_CLOSED' CHECK (planningFailurePolicy IN ('LEGACY_PATH','FAIL_CLOSED'))",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
@@ -553,6 +563,27 @@ export const TABLES = {
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_plan_audit_plan ON planAuditLogs(planId, createdAt)",
       "CREATE INDEX IF NOT EXISTS idx_plan_audit_project ON planAuditLogs(projectId, createdAt DESC)",
+    ],
+  },
+  planApprovals: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      planId: "TEXT NOT NULL REFERENCES executionPlans(id) ON DELETE CASCADE",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      revision: "INTEGER NOT NULL CHECK (revision > 0)",
+      planVersion: "INTEGER NOT NULL CHECK (planVersion > 0)",
+      optionId: "TEXT NOT NULL REFERENCES planOptions(id) ON DELETE RESTRICT",
+      decision: "TEXT NOT NULL CHECK (decision IN ('APPROVED','REJECTED'))",
+      scope: "TEXT NOT NULL CHECK (scope = 'EXECUTE_APPROVED_PLAN')",
+      actorId: "TEXT NOT NULL",
+      nonceHash: "TEXT NOT NULL",
+      reason: "TEXT NOT NULL DEFAULT ''",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_approvals_plan ON planApprovals(planId)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_approvals_nonce ON planApprovals(nonceHash)",
+      "CREATE INDEX IF NOT EXISTS idx_plan_approvals_project ON planApprovals(projectId, createdAt DESC)",
     ],
   },
   combos: {

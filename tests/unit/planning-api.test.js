@@ -95,7 +95,37 @@ describe("Versioned planning API", () => {
       },
     ), { params: Promise.resolve({ id: project.id, planId: created.id }) });
     expect(selectResponse.status).toBe(200);
-    expect((await selectResponse.json()).plan.selectedOptionId).toBe(created.options[0].id);
+    const selected = (await selectResponse.json()).plan;
+    expect(selected.selectedOptionId).toBe(created.options[0].id);
+
+    const requestApprovalRoute = await import("@/app/api/v1/projects/[id]/plans/[planId]/request-approval/route.js");
+    const requestedResponse = await requestApprovalRoute.POST(new Request(
+      `https://router.example/api/v1/projects/${project.id}/plans/${created.id}/request-approval`,
+      {
+        method: "POST",
+        headers: { origin: "https://router.example", "content-type": "application/json" },
+        body: JSON.stringify({ expectedVersion: selected.version }),
+      },
+    ), { params: Promise.resolve({ id: project.id, planId: created.id }) });
+    expect(requestedResponse.status).toBe(200);
+    const requested = (await requestedResponse.json()).plan;
+
+    const approveRoute = await import("@/app/api/v1/projects/[id]/plans/[planId]/approve/route.js");
+    const approveResponse = await approveRoute.POST(new Request(
+      `https://router.example/api/v1/projects/${project.id}/plans/${created.id}/approve`,
+      {
+        method: "POST",
+        headers: { origin: "https://router.example", "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedVersion: requested.version,
+          optionId: created.options[0].id,
+          scope: "EXECUTE_APPROVED_PLAN",
+          idempotencyKey: "planning-api-approval-000001",
+        }),
+      },
+    ), { params: Promise.resolve({ id: project.id, planId: created.id }) });
+    expect(approveResponse.status).toBe(200);
+    expect((await approveResponse.json()).plan.status).toBe("APPROVED");
   });
 
   it("rejects cross-origin mutations before invoking the planning provider", async () => {

@@ -25,6 +25,12 @@ import {
 } from "@/lib/v2ProxyConfig.js";
 import { isProtectedApiKeyRow, protectApiKey } from "@/lib/apiKeyStorage.js";
 import { upsertSearchDocumentInTransaction } from "@/lib/projectMemory/searchIndex.js";
+import {
+  KEY_PLANNING_DEFAULT,
+  keyPlanningFromColumns,
+  keyPlanningToColumns,
+  validateKeyPlanningInput,
+} from "@/shared/utils/keyPlanning.js";
 
 // Settings
 export {
@@ -126,6 +132,7 @@ export async function exportDb() {
       ownerId: r.ownerId || "local-admin",
       projectAccess: r.projectAccess !== 0 && r.projectAccess !== false,
       maxProjects: r.maxProjects === null || r.maxProjects === undefined ? null : Number(r.maxProjects),
+      planning: keyPlanningFromColumns(r),
       v2Proxy: {
         enabled: r.v2Enabled === 1 || r.v2Enabled === true,
         upstreamBaseUrl: r.v2UpstreamBaseUrl || null,
@@ -180,6 +187,7 @@ export async function exportDb() {
       planRevisions: db.all(`SELECT * FROM planRevisions`),
       planOptions: db.all(`SELECT * FROM planOptions`),
       planAuditLogs: db.all(`SELECT * FROM planAuditLogs`),
+      planApprovals: db.all(`SELECT * FROM planApprovals`),
     },
   };
 
@@ -289,6 +297,13 @@ export async function importDb(payload) {
       const maxProjects = k.maxProjects === undefined || k.maxProjects === null
         ? null
         : (Number.isSafeInteger(Number(k.maxProjects)) && Number(k.maxProjects) >= 0 ? Number(k.maxProjects) : null);
+      let planning = KEY_PLANNING_DEFAULT;
+      if (k.planning !== undefined) {
+        const checked = validateKeyPlanningInput(k.planning);
+        if (!checked.ok) throw new Error(`apiKeys ${k.id}: ${checked.error}`);
+        planning = checked.value;
+      }
+      const planningCols = keyPlanningToColumns(planning).value;
       const protectedKey = isProtectedApiKeyRow(k)
         ? { storageKey: k.key, keyHash: k.keyHash, keyEncrypted: k.keyEncrypted }
         : protectApiKey(k.key, k.machineId);
@@ -360,8 +375,10 @@ export async function importDb(payload) {
           quotaMaxCost, quotaMaxInputTokens, quotaMaxRequests,
           quotaResetMode, quotaResetInterval, quotaResetIntervalValue, quotaResetIntervalUnit, quotaExpiresAt, quotaNextResetAt,
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
-          , ownerId, projectAccess, maxProjects
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          , ownerId, projectAccess, maxProjects,
+          planningEnabled, planningMode, planningProviderId, planningModelId,
+          planningApprovalRequired, planningContextTokenBudget, planningPlanExpirationMinutes, planningFailurePolicy
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, protectedKey.storageKey, protectedKey.keyHash, protectedKey.keyEncrypted,
           k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
@@ -376,6 +393,10 @@ export async function importDb(payload) {
           quotaCols.quotaExpiresAt, usageNextResetAt,
           usageCost, usageInputTokens, usageRequests, usageResetAt,
           ownerId, projectAccess ? 1 : 0, maxProjects,
+          planningCols.planningEnabled, planningCols.planningMode,
+          planningCols.planningProviderId, planningCols.planningModelId,
+          planningCols.planningApprovalRequired, planningCols.planningContextTokenBudget,
+          planningCols.planningPlanExpirationMinutes, planningCols.planningFailurePolicy,
         ]
       );
     }
@@ -413,6 +434,7 @@ export async function importDb(payload) {
       insertRawRows("planRevisions", projectDump.planRevisions);
       insertRawRows("planOptions", projectDump.planOptions);
       insertRawRows("planAuditLogs", projectDump.planAuditLogs);
+      insertRawRows("planApprovals", projectDump.planApprovals);
       for (const row of db.all("SELECT projectId, id, subject, value FROM memoryItems")) {
         upsertSearchDocumentInTransaction(db, { projectId: row.projectId, kind: "memory", refId: row.id, title: row.subject, body: row.value });
       }

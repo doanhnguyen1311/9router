@@ -98,8 +98,11 @@ export async function PUT(request, { params }) {
       projectAccess,
       maxProjects,
       activeProjectId,
+      planning,
     } = body;
-    if (effortPolicy !== undefined && !(await hasAdminSession(request))) return NextResponse.json({ error: "Admin session required to change effort access" }, { status: 401 });
+    if ((effortPolicy !== undefined || planning !== undefined) && !(await hasAdminSession(request))) {
+      return NextResponse.json({ error: "Admin session required to change managed key configuration" }, { status: 401 });
+    }
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -121,6 +124,7 @@ export async function PUT(request, { params }) {
       }
       updateData.maxProjects = maxProjects;
     }
+    if (planning !== undefined) updateData.planning = planning;
     if (activeProjectId !== undefined && activeProjectId !== null && typeof activeProjectId !== "string") {
       return NextResponse.json({ error: "activeProjectId must be a string or null" }, { status: 400 });
     }
@@ -190,7 +194,7 @@ export async function PUT(request, { params }) {
     if (error?.code === "KEY_MODEL_ALIAS_CONFLICT") {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    if (["INVALID_KEY_MODEL_ROUTING", "INVALID_KEY_EFFORT", "INVALID_KEY_USAGE_ACCESS", "INVALID_KEY_MAX_PROJECTS"].includes(error?.code)) {
+    if (["INVALID_KEY_MODEL_ROUTING", "INVALID_KEY_EFFORT", "INVALID_KEY_USAGE_ACCESS", "INVALID_KEY_MAX_PROJECTS", "INVALID_KEY_PLANNING"].includes(error?.code)) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) {

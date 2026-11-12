@@ -13,6 +13,7 @@ import {
   cancelPlan as cancelPlanRecord,
   commitPlanRevision,
   createDraftPlan,
+  decidePlanApproval,
   getPlan as getPlanRecord,
   listPlanOptions,
   listPlanRevisions,
@@ -195,6 +196,30 @@ export function requestApproval(projectId, planId, input, identity) {
   }, identity);
 }
 
+function approvalInput(input) {
+  const idempotencyKey = cleanRequiredText(input?.idempotencyKey, "idempotencyKey", 200);
+  if (idempotencyKey.length < 16) {
+    throw planningError("PLAN_APPROVAL_NONCE_INVALID", "idempotencyKey must contain at least 16 characters", 400);
+  }
+  return {
+    expectedVersion: expectedVersion(input?.expectedVersion),
+    optionId: cleanRequiredText(input?.optionId, "optionId", 200),
+    scope: cleanRequiredText(input?.scope, "scope", 80),
+    idempotencyKey,
+    reason: input?.reason == null || input.reason === ""
+      ? ""
+      : cleanRequiredText(input.reason, "reason", 2000),
+  };
+}
+
+export function approvePlan(projectId, planId, input, identity) {
+  return decidePlanApproval({ projectId, planId, ...approvalInput(input), decision: "APPROVED" }, identity);
+}
+
+export function rejectPlan(projectId, planId, input, identity) {
+  return decidePlanApproval({ projectId, planId, ...approvalInput(input), decision: "REJECTED" }, identity);
+}
+
 export function cancelPlan(projectId, planId, input, identity) {
   const reason = input?.reason == null || input.reason === ""
     ? ""
@@ -211,4 +236,4 @@ export async function planningProviderHealth(input, { provider = getPlanningProv
   return provider.healthCheck({ providerId: input?.providerId, modelId: input?.modelId });
 }
 
-export const __test__ = { cleanRequiredText, expectedVersion, loadPlanningContextSnapshot };
+export const __test__ = { cleanRequiredText, expectedVersion, approvalInput, loadPlanningContextSnapshot };
