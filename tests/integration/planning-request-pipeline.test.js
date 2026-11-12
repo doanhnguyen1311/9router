@@ -183,6 +183,38 @@ describe("Planning-enabled inference request pipeline", () => {
     expect(geminiResponse.status).toBe(202);
     expect(await geminiResponse.json()).toMatchObject({ object: "9router.planning_session", status: "OPTIONS_READY" });
 
-    expect(receivedModels).toEqual(["planner-model", "planner-model", "planner-model"]);
-  }, 20_000);
+    const actionsRoute = await import("@/app/api/v1/planning/sessions/[planId]/actions/route.js");
+    const invoke = (planId, action) => actionsRoute.POST(new Request(
+      `https://router.example/api/v1/planning/sessions/${planId}/actions`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${key.key}`, "content-type": "application/json" },
+        body: JSON.stringify(action),
+      },
+    ), { params: Promise.resolve({ planId }) });
+
+    const revisedResponse = await invoke(payload.planId, {
+      action: "revise", expectedVersion: payload.version, feedback: "Make the approval boundary explicit",
+    });
+    expect(revisedResponse.status).toBe(200);
+    const revised = await revisedResponse.json();
+    expect(revised).toMatchObject({ status: "OPTIONS_READY", revision: 2 });
+
+    const selected = await (await invoke(payload.planId, {
+      action: "select_option", expectedVersion: revised.version, optionId: revised.options[0].id,
+    })).json();
+    const pending = await (await invoke(payload.planId, {
+      action: "request_approval", expectedVersion: selected.version,
+    })).json();
+    const approvedResponse = await invoke(payload.planId, {
+      action: "approve", expectedVersion: pending.version, optionId: pending.selectedOptionId,
+      scope: "EXECUTE_APPROVED_PLAN", idempotencyKey: "pipeline-approval-nonce-00000001",
+    });
+    expect(approvedResponse.status).toBe(200);
+    expect(await approvedResponse.json()).toMatchObject({ status: "APPROVED", approvalRequired: true });
+
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    expect((await getAdapter()).get("SELECT COUNT(*) AS count FROM planExecutions WHERE planId=?", [payload.planId]).count).toBe(0);
+    expect(receivedModels).toEqual(["planner-model", "planner-model", "planner-model", "planner-model"]);
+  }, 30_000);
 });

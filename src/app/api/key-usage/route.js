@@ -50,6 +50,17 @@ function visibleSummary(summary, canViewModelList) {
   return response;
 }
 
+function planningSummary(keyRecord) {
+  const enabled = keyRecord?.planning?.planningEnabled === true
+    && ["MANUAL", "ADAPTIVE"].includes(keyRecord?.planning?.planningMode);
+  return {
+    enabled,
+    mode: enabled ? keyRecord.planning.planningMode : "OFF",
+    approvalRequired: true,
+    failurePolicy: enabled ? keyRecord.planning.failurePolicy : "FAIL_CLOSED",
+  };
+}
+
 async function projectAssignmentSummary(keyRecord) {
   const access = keyRecord?.ownerId ? await getEffectiveUserProjectAccess(keyRecord.ownerId) : null;
   const canUseProjects = keyRecord?.projectAccess === true && access?.effective === true;
@@ -128,7 +139,11 @@ export async function GET(request) {
     }
 
     return NextResponse.json(
-      { ...visibleSummary(summary, visibility.canViewModelList), projectAssignment: await projectAssignmentSummary(keyRecord) },
+      {
+        ...visibleSummary(summary, visibility.canViewModelList),
+        projectAssignment: await projectAssignmentSummary(keyRecord),
+        planning: planningSummary(keyRecord),
+      },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {
@@ -203,7 +218,11 @@ export async function PATCH(request) {
       ? (await getApiKeyByKey(apiKey)) || updated
       : updated;
     return NextResponse.json(
-      { ...updatedPreferences(finalRecord, visibility.canViewModelList), projectAssignment: await projectAssignmentSummary(finalRecord) },
+      {
+        ...updatedPreferences(finalRecord, visibility.canViewModelList),
+        projectAssignment: await projectAssignmentSummary(finalRecord),
+        planning: planningSummary(finalRecord),
+      },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {

@@ -359,6 +359,7 @@ export default function ApiKeysPageClient() {
       const planning = {
         ...next,
         planningEnabled: next.planningMode !== "OFF",
+        approvalRequired: true,
         contextTokenBudget: Number(next.contextTokenBudget),
         planExpiration: Number(next.planExpiration),
       };
@@ -401,7 +402,7 @@ export default function ApiKeysPageClient() {
       planningMode: key.planning?.planningMode || "OFF",
       planningProviderId: key.planning?.planningProviderId || "",
       planningModelId: key.planning?.planningModelId || "",
-      approvalRequired: key.planning?.approvalRequired !== false,
+      approvalRequired: true,
       contextTokenBudget: key.planning?.contextTokenBudget || 1800,
       planExpiration: key.planning?.planExpiration || 10080,
       failurePolicy: key.planning?.failurePolicy || "FAIL_CLOSED",
@@ -855,13 +856,13 @@ export default function ApiKeysPageClient() {
                 <div className="space-y-4">
                   <section className="rounded-xl border border-border bg-surface-2/40 p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div><h3 className="text-sm font-semibold text-text-main">Project-aware Planning</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-text-muted">OFF preserves the existing request pipeline. MANUAL enables explicit planning tasks. ADAPTIVE may suggest planning, but never changes a legacy response protocol or executes without approval.</p></div><Badge tone={planningDraft.planningMode === "OFF" ? "muted" : "green"}>{planningDraft.planningMode}</Badge>
+                      <div><h3 className="text-sm font-semibold text-text-main">Project-aware Planning</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-text-muted">OFF preserves the existing request pipeline. MANUAL requires the client Planning header. ADAPTIVE automatically turns each new user request into options and returns a 202 planning session before the requested execution model is contacted.</p></div><Badge tone={planningDraft.planningMode === "OFF" ? "muted" : "green"}>{planningDraft.planningMode}</Badge>
                     </div>
                     <div className="mt-4 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Planning mode">
                       {[
                         ["OFF", "Off", "Legacy behavior only"],
-                        ["MANUAL", "Manual", "User starts each plan"],
-                        ["ADAPTIVE", "Adaptive", "Suggest planning when useful"],
+                        ["MANUAL", "Manual", "Require X-9Router-Planning: plan"],
+                        ["ADAPTIVE", "Adaptive", "Automatically return planning options"],
                       ].map(([value, label, help]) => <button key={value} type="button" role="radio" aria-checked={planningDraft.planningMode === value} onClick={() => setPlanningDraft((current) => ({ ...current, planningMode: value, planningEnabled: value !== "OFF" }))} className={`rounded-xl border p-3 text-left transition ${planningDraft.planningMode === value ? "border-primary bg-primary/5" : "border-border bg-surface hover:border-primary/40"}`}><span className="block text-xs font-semibold text-text-main">{label}</span><span className="mt-1 block text-[10px] text-text-muted">{help}</span></button>)}
                     </div>
                   </section>
@@ -872,8 +873,10 @@ export default function ApiKeysPageClient() {
                     <label className="text-xs font-semibold text-text-main">Context token budget<input type="number" min="256" max="16000" value={planningDraft.contextTokenBudget} onChange={(event) => setPlanningDraft((current) => ({ ...current, contextTokenBudget: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" /></label>
                     <label className="text-xs font-semibold text-text-main">Plan expiration (minutes)<input type="number" min="5" max="43200" value={planningDraft.planExpiration} onChange={(event) => setPlanningDraft((current) => ({ ...current, planExpiration: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" /></label>
                     <label className="text-xs font-semibold text-text-main">Failure policy<select value={planningDraft.failurePolicy} onChange={(event) => setPlanningDraft((current) => ({ ...current, failurePolicy: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50"><option value="FAIL_CLOSED">Fail closed</option><option value="LEGACY_PATH">Continue legacy path</option></select></label>
-                    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3"><div><p className="text-xs font-semibold text-text-main">Human approval required</p><p className="mt-0.5 text-[10px] text-text-muted">Execution cannot begin from chat text alone.</p></div><Toggle size="sm" checked={planningDraft.approvalRequired} disabled={planningDraft.planningMode === "OFF"} onChange={(checked) => setPlanningDraft((current) => ({ ...current, approvalRequired: checked }))} /></div>
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3"><div><p className="text-xs font-semibold text-text-main">Human approval required</p><p className="mt-0.5 text-[10px] text-text-muted">Always enforced. Chat text can never approve or start execution.</p></div><Badge tone="green">Required</Badge></div>
                   </section>
+
+                  {planningDraft.failurePolicy === "LEGACY_PATH" && planningDraft.planningMode !== "OFF" && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-amber-600">Continue legacy path means a transient Planning Provider failure may send the original request to its execution model without a plan. Use Fail closed when every request must stop at approval.</div>}
 
                   <section className="rounded-xl border border-border bg-surface-2/40 p-4 text-xs">
                     <div className="flex justify-between gap-3"><span className="text-text-muted">Assigned Project</span><span className="font-medium text-text-main">{managedKey.assignedProjectId ? projectMap.get(managedKey.assignedProjectId)?.name || managedKey.assignedProjectId : "None"}</span></div><p className="mt-2 text-[10px] leading-5 text-text-muted">Planning still requires Project membership and backend RBAC. Assigning a Project here does not grant access by itself.</p>

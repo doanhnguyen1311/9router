@@ -37,9 +37,9 @@ function newNonce() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
-export default function ProjectPlanningPanel({ projectId, canEdit }) {
+export default function ProjectPlanningPanel({ projectId, canEdit, initialPlanId = null }) {
   const [plans, setPlans] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(initialPlanId);
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -66,7 +66,7 @@ export default function ProjectPlanningPanel({ projectId, canEdit }) {
   const loadPlans = useCallback(async () => {
     const body = await readJson(await fetch(`${base}?limit=100`, { cache: "no-store" }));
     setPlans(body.plans || []);
-    setSelectedId((current) => current || body.plans?.[0]?.id || null);
+    setSelectedId((current) => body.plans?.some((item) => item.id === current) ? current : body.plans?.[0]?.id || null);
   }, [base]);
 
   const loadPlan = useCallback(async (planId) => {
@@ -85,6 +85,8 @@ export default function ProjectPlanningPanel({ projectId, canEdit }) {
     })();
     return () => { active = false; };
   }, [loadPlans]);
+
+  useEffect(() => { if (initialPlanId) setSelectedId(initialPlanId); }, [initialPlanId]);
 
   useEffect(() => { if (selectedId) void loadPlan(selectedId).catch((loadError) => setError(loadError.message)); }, [selectedId, loadPlan]);
 

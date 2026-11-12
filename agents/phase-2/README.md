@@ -1,6 +1,12 @@
 # Phase 2 — Planning and human-approval dashboard
 
-Status: `PASS`
+Reopened status: `IN PROGRESS` for the corrected API-Key planning-session action protocol. The historical checkpoint below remains evidence for the original dashboard scope, but does not unlock reopened Phase 3.
+
+Reopened starting checkpoint: `4dcb52d12c13903c571abc2d5b962711be5fe665`.
+
+Design: [`automatic-session-actions-design.md`](./automatic-session-actions-design.md).
+
+Historical status: `PASS`
 
 Starting point: Phase 1 quality gate `PASS`.
 

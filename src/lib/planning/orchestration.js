@@ -130,13 +130,12 @@ export function shouldCreateAutomaticPlan(request, body, keyRecord) {
 
 function actionNames(status, selectedOptionId) {
   if (status === "DRAFT") return ["poll"];
-  if (status === "NEEDS_CLARIFICATION") return ["revise", "cancel"];
+  if (status === "NEEDS_CLARIFICATION") return ["submit_feedback", "revise", "cancel"];
   if (status === "OPTIONS_READY") return selectedOptionId
-    ? ["select_option", "revise", "request_approval", "cancel"]
-    : ["select_option", "revise", "cancel"];
-  if (status === "PENDING_APPROVAL") return ["approve", "reject", "revise", "cancel"];
-  if (status === "APPROVED") return ["execute"];
-  if (status === "EXECUTING") return ["poll", "cancel_execution"];
+    ? ["select_option", "submit_feedback", "revise", "request_approval", "cancel"]
+    : ["select_option", "submit_feedback", "revise", "cancel"];
+  if (status === "PENDING_APPROVAL") return ["select_option", "submit_feedback", "approve", "reject", "revise", "cancel"];
+  if (status === "APPROVED" || status === "EXECUTING") return ["poll"];
   return [];
 }
 
@@ -161,7 +160,10 @@ export function serializePlanningSession(plan, keyRecord) {
     options: plan.options || [],
     selectedOptionId: plan.selectedOptionId || null,
     recommendedOptionId: recommended,
-    approvalRequired: keyRecord?.planning?.approvalRequired !== false,
+    // Human approval is a protocol boundary, not an inference hint. Historical
+    // false values are treated as true until an independently authorized
+    // non-human approval policy exists.
+    approvalRequired: true,
     availableActions: actionNames(plan.status, plan.selectedOptionId),
     provider: { id: plan.providerId, model: plan.modelId },
     expiresAt: plan.expiresAt,
@@ -169,9 +171,22 @@ export function serializePlanningSession(plan, keyRecord) {
     updatedAt: plan.updatedAt,
     links: {
       self,
-      dashboard: `/dashboard/projects/${encodeURIComponent(plan.projectId)}`,
+      actions: `${self}/actions`,
+      dashboard: `/dashboard/projects/${encodeURIComponent(plan.projectId)}?tab=planning&plan=${encodeURIComponent(plan.id)}`,
     },
   };
+}
+
+export function planningCorsOptionsResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Max-Age": "86400",
+    },
+  });
 }
 
 export function planningSessionResponse(plan, keyRecord, status = 202) {
@@ -191,9 +206,17 @@ export function planningSessionResponse(plan, keyRecord, status = 202) {
 export function planningOperationErrorResponse(error) {
   const status = Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599 ? error.status : 500;
   const message = status >= 500 ? "Planning operation failed" : String(error?.message || "Planning request failed");
+  const retryAfter = status === 429 && Number.isSafeInteger(error?.details?.retryAfter)
+    ? String(error.details.retryAfter)
+    : null;
   return new Response(JSON.stringify({
-    error: { type: "planning_error", code: error?.code || "PLANNING_ERROR", message },
-  }), { status, headers: NO_STORE_HEADERS });
+    error: {
+      type: "planning_error",
+      code: error?.code || "PLANNING_ERROR",
+      message,
+      ...(status < 500 && error?.details ? { details: error.details } : {}),
+    },
+  }), { status, headers: { ...NO_STORE_HEADERS, ...(retryAfter ? { "Retry-After": retryAfter } : {}) } });
 }
 
 export async function orchestratePlanningRequest({ request, body, keyRecord, sessionId = null, endpoint = null, provider } = {}) {

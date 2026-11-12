@@ -133,4 +133,33 @@ describe("API key self-service usage summary", () => {
     });
     expect(summary.models[0].cost).toBeCloseTo(0.00205, 12);
   });
+
+  it("shows administrator-controlled Planning status without allowing self-service escalation", async () => {
+    const { database } = await boot();
+    const key = await database.createApiKey("Planning visibility", "planning-visibility");
+    await database.updateApiKey(key.id, { planning: {
+      planningEnabled: true,
+      planningMode: "ADAPTIVE",
+      planningProviderId: "planner",
+      planningModelId: "planner-model",
+      approvalRequired: false,
+      contextTokenBudget: 1200,
+      planExpiration: 60,
+      failurePolicy: "FAIL_CLOSED",
+    } });
+    const route = await import("@/app/api/key-usage/route.js");
+    const headers = { authorization: `Bearer ${key.key}`, "content-type": "application/json" };
+    const response = await route.GET(new Request("https://router.example/api/key-usage", { headers }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ planning: {
+      enabled: true, mode: "ADAPTIVE", approvalRequired: true, failurePolicy: "FAIL_CLOSED",
+    } });
+
+    const escalation = await route.PATCH(new Request("https://router.example/api/key-usage", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ planning: { planningMode: "OFF" } }),
+    }));
+    expect(escalation.status).toBe(400);
+  });
 });

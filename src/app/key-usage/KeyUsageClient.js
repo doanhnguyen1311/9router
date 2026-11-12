@@ -427,6 +427,19 @@ export default function KeyUsageClient() {
               <p className="mt-2 text-xs text-text-muted">Each model supports different levels. Admin model overrides may apply; unsupported defaults return an error. Your client can override the default only when user access is enabled.</p>
               {effortError && <p role="alert" className="text-sm text-red-500">{effortError}</p>}
             </Card>}
+            {summary.planning && <Card padding="sm" className="mb-4">
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined rounded-lg bg-brand-500/10 p-2 text-[19px] text-brand-500" aria-hidden="true">edit_note</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-text-main">Planning workflow</h2><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${summary.planning.enabled ? "bg-green-500/10 text-green-500" : "bg-surface-2 text-text-muted"}`}>{summary.planning.mode}</span></div>
+                  {!summary.planning.enabled ? <p className="mt-1 text-xs leading-5 text-text-muted">Planning is disabled by the administrator. Requests use the normal model response path.</p> : <>
+                    <p className="mt-1 text-xs leading-5 text-text-muted">{summary.planning.mode === "ADAPTIVE" ? "New text requests automatically return a 202 planning session with options before execution." : "Send X-9Router-Planning: plan to request options; requests without it use the normal response path."}</p>
+                    <p className="mt-2 text-xs leading-5 text-text-muted">Use the response&apos;s <code className="rounded bg-surface-2 px-1 text-text-main">links.actions</code> endpoint to select, revise and explicitly approve. Approval is always required.</p>
+                    {summary.planning.failurePolicy === "LEGACY_PATH" && <p role="alert" className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-2 text-xs text-amber-600">A transient planner failure may continue through the normal model path because the administrator selected Continue legacy path.</p>}
+                  </>}
+                </div>
+              </div>
+            </Card>}
             {summary.projectAssignment?.canUseProjects && (
               <Card padding="sm" className="mb-4">
                 <div className="flex items-start gap-3">

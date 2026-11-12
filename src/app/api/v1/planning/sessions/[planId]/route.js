@@ -1,10 +1,15 @@
 import {
   getPlanningSessionForApiKey,
+  planningCorsOptionsResponse,
   planningOperationErrorResponse,
   planningSessionResponse,
 } from "@/lib/planning/orchestration.js";
 
 export const dynamic = "force-dynamic";
+
+export function OPTIONS() {
+  return planningCorsOptionsResponse();
+}
 
 export async function GET(request, { params }) {
   try {
