@@ -18,3 +18,21 @@ Primary evidence:
 - [`migration-verification.md`](./migration-verification.md)
 - [`rollback-strategy.md`](./rollback-strategy.md)
 - [`phase-2-plan.md`](./phase-2-plan.md)
+
+## Reopened scope — automatic request planning
+
+The corrected request flow is complete and remains `PASS` at implementation checkpoint `11af71e8a94529c9c38375d8e1ab005ddad0a6c6`.
+
+Planning-enabled inference requests now enter Planning before the requested execution model is contacted, return a durable multi-option planning session, and preserve the historical path for old keys and `OFF` mode. Phase 2 is reopened next to expose versioned select/revise/approve actions to planning-aware clients.
+
+Reopened evidence:
+
+- [`automatic-orchestration-design.md`](./automatic-orchestration-design.md)
+- [`reopened-phase-report.md`](./reopened-phase-report.md)
+- [`reopened-quality-gate.md`](./reopened-quality-gate.md)
+- [`reopened-test-report.md`](./reopened-test-report.md)
+- [`reopened-security-review.md`](./reopened-security-review.md)
+- [`reopened-migration-verification.md`](./reopened-migration-verification.md)
+- [`reopened-performance-assessment.md`](./reopened-performance-assessment.md)
+- [`reopened-rollback-strategy.md`](./reopened-rollback-strategy.md)
+- [`reopened-phase-2-plan.md`](./reopened-phase-2-plan.md)
