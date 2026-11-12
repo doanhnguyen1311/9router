@@ -50,7 +50,7 @@
 - Planning create p95 `6.58 ms`; list 30 `0.88 ms`; concurrent read 30 `3.42 ms` on local temporary SQLite.
 - Context retrieval p95 `7.56 ms` versus Phase 0 `8.39 ms`; no material regression.
 
-**Git Checkpoint:** to be recorded immediately after this pre-commit report; `AGENTS.md` remains untracked and excluded.
+**Git Checkpoint:** `15815c99496d7c5d891ee478d660d08f10a994a1` (`feat: add phase 1 planning foundation`). `AGENTS.md` remained untracked and excluded.
 
 **Rollback:** revert application checkpoint; retain additive Planning tables, or manually restore the automatic `schema-14-to-15` backup if migration recovery is required.
 
