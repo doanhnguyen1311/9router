@@ -189,6 +189,13 @@ export async function exportDb() {
       planAuditLogs: db.all(`SELECT * FROM planAuditLogs`),
       planApprovals: db.all(`SELECT * FROM planApprovals`),
       planExecutions: db.all(`SELECT * FROM planExecutions`),
+      chatgptConnectors: db.all(`SELECT * FROM chatgptConnectors`),
+      chatgptOauthClients: db.all(`SELECT * FROM chatgptOauthClients`),
+      chatgptOauthRequests: db.all(`SELECT * FROM chatgptOauthRequests`),
+      chatgptOauthCodes: db.all(`SELECT * FROM chatgptOauthCodes`),
+      chatgptOauthTokens: db.all(`SELECT * FROM chatgptOauthTokens`),
+      chatgptConnectorAuditLogs: db.all(`SELECT * FROM chatgptConnectorAuditLogs`),
+      chatgptPlanSubmissions: db.all(`SELECT * FROM chatgptPlanSubmissions`),
     },
   };
 
@@ -229,6 +236,7 @@ export async function importDb(payload) {
       // that option belongs to the plan. Defer FK checks until the complete
       // project graph has been restored atomically.
       db.exec("PRAGMA defer_foreign_keys = ON");
+      db.run(`DELETE FROM chatgptOauthClients`);
       // One root delete cascades every project-owned row and API-key mapping.
       db.run(`DELETE FROM projects`);
       db.run(`DELETE FROM projectPermissions`);
@@ -437,6 +445,13 @@ export async function importDb(payload) {
       insertRawRows("planAuditLogs", projectDump.planAuditLogs);
       insertRawRows("planApprovals", projectDump.planApprovals);
       insertRawRows("planExecutions", projectDump.planExecutions);
+      insertRawRows("chatgptConnectors", projectDump.chatgptConnectors);
+      insertRawRows("chatgptOauthClients", projectDump.chatgptOauthClients);
+      insertRawRows("chatgptOauthRequests", projectDump.chatgptOauthRequests);
+      insertRawRows("chatgptOauthCodes", projectDump.chatgptOauthCodes);
+      insertRawRows("chatgptOauthTokens", projectDump.chatgptOauthTokens);
+      insertRawRows("chatgptConnectorAuditLogs", projectDump.chatgptConnectorAuditLogs);
+      insertRawRows("chatgptPlanSubmissions", projectDump.chatgptPlanSubmissions);
       for (const row of db.all("SELECT projectId, id, subject, value FROM memoryItems")) {
         upsertSearchDocumentInTransaction(db, { projectId: row.projectId, kind: "memory", refId: row.id, title: row.subject, body: row.value });
       }

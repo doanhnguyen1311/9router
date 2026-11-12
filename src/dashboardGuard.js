@@ -39,6 +39,10 @@ const PUBLIC_API_PATHS = [
 // Keep root-level rewrites here too: middleware runs before Next.js rewrites.
 const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses"];
 const V2_PROXY_PREFIXES = ["/v2", "/api/v2"];
+const CHATGPT_CONNECTOR_PUBLIC_PREFIXES = [
+  "/api/v1/connectors/chatgpt/oauth/",
+  "/api/v1/connectors/chatgpt/mcp",
+];
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -149,6 +153,14 @@ function isV2ProxyApi(pathname) {
   return V2_PROXY_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+function isChatGptConnectorPublicApi(pathname) {
+  return CHATGPT_CONNECTOR_PUBLIC_PREFIXES.some((prefix) => pathname === prefix.replace(/\/$/, "") || pathname.startsWith(prefix));
+}
+
+function isChatGptConnectorAdminApi(pathname) {
+  return /^\/api\/v1\/projects\/[^/]+\/chatgpt-connectors(?:\/|$)/.test(pathname);
+}
+
 function numericV2AuthError() {
   return new Response("1001", {
     status: 401,
@@ -225,6 +237,8 @@ export const __test__ = {
   extractApiKey,
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
+  isChatGptConnectorPublicApi,
+  isChatGptConnectorAdminApi,
 };
 
 export async function proxy(request) {
@@ -251,6 +265,15 @@ export async function proxy(request) {
     if (request.method === "OPTIONS") return NextResponse.next();
     if (await hasValidApiKey(request)) return NextResponse.next();
     return numericV2AuthError();
+  }
+
+  // ChatGPT OAuth and MCP authenticate inside their own handlers. Connector
+  // management remains a dashboard operation and must not inherit the broad
+  // public /api/v1 LLM behavior.
+  if (isChatGptConnectorPublicApi(pathname)) return NextResponse.next();
+  if (isChatGptConnectorAdminApi(pathname)) {
+    if (await hasValidCliToken(request) || await isAuthenticated(request)) return NextResponse.next();
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   if (isPublicLlmApi(pathname)) {

@@ -328,6 +328,47 @@ describe("dashboard guard local-only access", () => {
   });
 });
 
+describe("dashboard guard ChatGPT connector boundaries", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it("lets remote OAuth and MCP reach their scoped handler authentication", async () => {
+    expect(await proxy(request("/api/v1/connectors/chatgpt/oauth/register", {
+      host: "router.example.com",
+    }))).toBe(mocks.nextResponse);
+    expect(await proxy(request("/api/v1/connectors/chatgpt/mcp", {
+      host: "router.example.com",
+    }))).toBe(mocks.nextResponse);
+    expect(mocks.validateApiKey).not.toHaveBeenCalled();
+  });
+
+  it("keeps connector management behind dashboard authentication", async () => {
+    const denied = await proxy(request("/api/v1/projects/project-a/chatgpt-connectors", {
+      host: "router.example.com",
+    }));
+    expect(denied.status).toBe(401);
+
+    mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+    const authenticated = request("/api/v1/projects/project-a/chatgpt-connectors", {
+      host: "router.example.com",
+    });
+    authenticated.cookies.get.mockReturnValue({ value: "dashboard-token" });
+    expect(await proxy(authenticated)).toBe(mocks.nextResponse);
+  });
+
+  it("does not weaken unrelated remote /api/v1 API-key gates", async () => {
+    const response = await proxy(request("/api/v1/chat/completions", { host: "router.example.com" }));
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("API key required for remote API access");
+  });
+});
+
 describe("dashboard guard helpers", () => {
   it("lets the public key-usage handler perform its own API-key authentication", async () => {
     const response = await proxy(request("/api/key-usage", {

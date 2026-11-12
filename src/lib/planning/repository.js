@@ -448,4 +448,94 @@ export async function cancelPlan({ projectId, planId, expectedVersion, reason = 
   });
 }
 
+export async function importValidatedPlanDraft({
+  projectId,
+  originalRequest,
+  output,
+  connectorId,
+  idempotencyHash,
+  expiresAt,
+}, identity) {
+  await requireWrite(projectId, identity);
+  const db = await getAdapter();
+  let planId;
+  db.transaction(() => {
+    const duplicate = db.get(
+      "SELECT planId FROM chatgptPlanSubmissions WHERE connectorId=? AND idempotencyHash=?",
+      [connectorId, idempotencyHash],
+    );
+    if (duplicate) {
+      planId = duplicate.planId;
+      return;
+    }
+    const connector = db.get(
+      `SELECT id FROM chatgptConnectors
+       WHERE id=? AND projectId=? AND status='ACTIVE' AND allowPlanSubmit=1 AND expiresAt>?`,
+      [connectorId, projectId, new Date().toISOString()],
+    );
+    if (!connector) throw planningError("CONNECTOR_NOT_ACTIVE", "ChatGPT connector cannot submit plans", 403);
+    planId = uuidv4();
+    const now = new Date().toISOString();
+    const requiredQuestions = output.missingInformation.filter((item) => item.required);
+    const status = requiredQuestions.length ? "NEEDS_CLARIFICATION" : "OPTIONS_READY";
+    db.run(
+      `INSERT INTO executionPlans(
+        id, projectId, createdBy, apiKeyId, providerId, modelId, status, version, currentRevision,
+        originalRequest, interpretedObjective, assumptions, missingInformation, constraints,
+        affectedModules, risks, contextTokenEstimate, expiresAt, createdAt, updatedAt
+       ) VALUES(?, ?, ?, NULL, 'chatgpt-web-connector', 'interactive-web-session', ?, 2, 1,
+        ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      [
+        planId, projectId, identity.principalId, status, originalRequest, output.interpretedObjective,
+        JSON.stringify(output.assumptions), JSON.stringify(output.missingInformation),
+        JSON.stringify(output.constraints), JSON.stringify(output.affectedModules), JSON.stringify(output.risks),
+        expiresAt, now, now,
+      ],
+    );
+    db.run(
+      `INSERT INTO planRevisions(id, planId, revision, sourceRevision, createdBy, feedback, content, usage, createdAt)
+       VALUES(?, ?, 1, NULL, ?, NULL, ?, ?, ?)`,
+      [
+        uuidv4(), planId, identity.principalId, JSON.stringify(output),
+        JSON.stringify({ source: "chatgpt-web-connector", connectorId }), now,
+      ],
+    );
+    output.options.forEach((option, ordinal) => {
+      db.run(
+        `INSERT INTO planOptions(id, planId, revision, ordinal, name, summary, content, recommended, createdAt)
+         VALUES(?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(), planId, ordinal, option.name, option.summary, JSON.stringify(option),
+          output.recommendedOptionIndex === ordinal ? 1 : 0, now,
+        ],
+      );
+    });
+    db.run(
+      `INSERT INTO chatgptPlanSubmissions(id, connectorId, projectId, planId, idempotencyHash, createdAt)
+       VALUES(?, ?, ?, ?, ?, ?)`,
+      [uuidv4(), connectorId, projectId, planId, idempotencyHash, now],
+    );
+    audit(db, {
+      planId,
+      projectId,
+      actorId: identity.principalId,
+      eventType: "PLAN_CREATED",
+      toStatus: "DRAFT",
+      planVersion: 1,
+      metadata: { source: "chatgpt-web-connector", connectorId },
+    });
+    audit(db, {
+      planId,
+      projectId,
+      actorId: identity.principalId,
+      eventType: "PLAN_DRAFT_SUBMITTED",
+      fromStatus: "DRAFT",
+      toStatus: status,
+      planVersion: 2,
+      metadata: { source: "chatgpt-web-connector", connectorId, revision: 1, optionCount: output.options.length },
+    });
+  });
+  return getPlan(projectId, planId, identity);
+}
+
 export const __test__ = { parsePlanRow, parseOptionRow, parseRevisionRow, parseApprovalRow };

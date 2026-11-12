@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -619,6 +619,118 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_plan_executions_project ON planExecutions(projectId, createdAt DESC)",
       "CREATE INDEX IF NOT EXISTS idx_plan_executions_status ON planExecutions(status, leaseUntil)",
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_executions_plan ON planExecutions(planId)",
+    ],
+  },
+  chatgptConnectors: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      createdBy: "TEXT NOT NULL",
+      displayName: "TEXT NOT NULL",
+      status: "TEXT NOT NULL CHECK (status IN ('PENDING','ACTIVE','REVOKED','EXPIRED'))",
+      allowedScopes: "TEXT NOT NULL DEFAULT '[]'",
+      allowPlanSubmit: "INTEGER NOT NULL DEFAULT 0 CHECK (allowPlanSubmit IN (0,1))",
+      pairingCodeHash: "TEXT UNIQUE",
+      pairingExpiresAt: "TEXT",
+      pairingAttempts: "INTEGER NOT NULL DEFAULT 0 CHECK (pairingAttempts >= 0)",
+      pairedAt: "TEXT",
+      expiresAt: "TEXT NOT NULL",
+      revokedAt: "TEXT",
+      lastUsedAt: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_chatgpt_connectors_project ON chatgptConnectors(projectId, createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_chatgpt_connectors_status ON chatgptConnectors(status, expiresAt)",
+    ],
+  },
+  chatgptOauthClients: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      clientName: "TEXT",
+      redirectUris: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_chatgpt_oauth_clients_created ON chatgptOauthClients(createdAt DESC)"],
+  },
+  chatgptOauthRequests: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      clientId: "TEXT NOT NULL REFERENCES chatgptOauthClients(id) ON DELETE CASCADE",
+      redirectUri: "TEXT NOT NULL",
+      codeChallenge: "TEXT NOT NULL",
+      requestedScopes: "TEXT NOT NULL",
+      attempts: "INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0)",
+      state: "TEXT",
+      resource: "TEXT",
+      expiresAt: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_chatgpt_oauth_requests_expiry ON chatgptOauthRequests(expiresAt)"],
+  },
+  chatgptOauthCodes: {
+    columns: {
+      codeHash: "TEXT PRIMARY KEY",
+      connectorId: "TEXT NOT NULL REFERENCES chatgptConnectors(id) ON DELETE CASCADE",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      clientId: "TEXT NOT NULL REFERENCES chatgptOauthClients(id) ON DELETE CASCADE",
+      redirectUri: "TEXT NOT NULL",
+      codeChallenge: "TEXT NOT NULL",
+      scopes: "TEXT NOT NULL",
+      expiresAt: "TEXT NOT NULL",
+      usedAt: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_chatgpt_oauth_codes_expiry ON chatgptOauthCodes(expiresAt)"],
+  },
+  chatgptOauthTokens: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      tokenHash: "TEXT NOT NULL UNIQUE",
+      tokenType: "TEXT NOT NULL CHECK (tokenType IN ('access','refresh'))",
+      connectorId: "TEXT NOT NULL REFERENCES chatgptConnectors(id) ON DELETE CASCADE",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      clientId: "TEXT NOT NULL REFERENCES chatgptOauthClients(id) ON DELETE CASCADE",
+      scopes: "TEXT NOT NULL",
+      expiresAt: "TEXT NOT NULL",
+      revokedAt: "TEXT",
+      rotatedFromId: "TEXT REFERENCES chatgptOauthTokens(id) ON DELETE SET NULL",
+      lastUsedAt: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_chatgpt_oauth_tokens_connector ON chatgptOauthTokens(connectorId, tokenType, expiresAt)",
+      "CREATE INDEX IF NOT EXISTS idx_chatgpt_oauth_tokens_expiry ON chatgptOauthTokens(tokenType, expiresAt)",
+    ],
+  },
+  chatgptConnectorAuditLogs: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      connectorId: "TEXT REFERENCES chatgptConnectors(id) ON DELETE SET NULL",
+      projectId: "TEXT REFERENCES projects(id) ON DELETE CASCADE",
+      actorId: "TEXT NOT NULL",
+      eventType: "TEXT NOT NULL",
+      metadata: "TEXT NOT NULL DEFAULT '{}'",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_chatgpt_connector_audit_project ON chatgptConnectorAuditLogs(projectId, createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_chatgpt_connector_audit_connector ON chatgptConnectorAuditLogs(connectorId, createdAt DESC)",
+    ],
+  },
+  chatgptPlanSubmissions: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      connectorId: "TEXT NOT NULL REFERENCES chatgptConnectors(id) ON DELETE CASCADE",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      planId: "TEXT NOT NULL UNIQUE REFERENCES executionPlans(id) ON DELETE CASCADE",
+      idempotencyHash: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_chatgpt_submissions_idempotency ON chatgptPlanSubmissions(connectorId, idempotencyHash)",
+      "CREATE INDEX IF NOT EXISTS idx_chatgpt_submissions_project ON chatgptPlanSubmissions(projectId, createdAt DESC)",
     ],
   },
   combos: {
