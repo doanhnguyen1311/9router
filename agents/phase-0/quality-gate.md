@@ -16,7 +16,7 @@ Decision: `PASS`
 - Database migration/restart/import/concurrency verification: PASS.
 - Performance baseline: PASS for local database, Project Memory, file indexing, queue, and health endpoint.
 - Rollback strategy: PASS; backup/restore-forward documented.
-- Git checkpoint: required immediately after final report update.
+- Git checkpoint: PASS — `e5d602f3`.
 
 ## Conditional tests
 

@@ -67,6 +67,6 @@
 **Git Checkpoint:**
 
 - Baseline: `master@9a71aba83a99d2801162391b37c42a98c8451a3c`.
-- Phase 0 checkpoint hash is recorded after the report commit.
+- Phase 0 implementation/evidence checkpoint: `e5d602f3` (`chore: establish phase 0 quality baseline`).
 
 **Next Phase Readiness:** READY
