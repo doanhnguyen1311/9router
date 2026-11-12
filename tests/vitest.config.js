@@ -15,6 +15,9 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "**/.claude/**", "**/dist/**"],
     // Allow many it.concurrent cases (real provider smoke runs ~50 providers in parallel)
     maxConcurrency: 60,
+    // Unit tests own their fetch stubs. Explicit proxyAwareFetch tests still
+    // exercise the transport without a barrel import replacing global fetch.
+    env: { NINE_ROUTER_DISABLE_GLOBAL_FETCH_PATCH: "1" },
     // Suppress noisy console output from handlers under test
     silent: false,
   },

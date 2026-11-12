@@ -29,13 +29,20 @@ async function loadExecutor(fetchMock, useProxy = true) {
     vi.stubEnv(key, "");
   }
   if (useProxy) vi.stubEnv("HTTPS_PROXY", "http://proxy.test:3128");
-  // Exercise the real proxyAwareFetch: it captures fetch when imported.
-  vi.stubGlobal("fetch", fetchMock);
+  // Isolate Qoder's signed-request/replay behavior from the proxy transport's
+  // own unit tests. A synthetic dispatcher records whether this path is proxied.
+  vi.doMock("../../open-sse/utils/proxyFetch.js", () => ({
+    proxyAwareFetch: vi.fn((url, options) => fetchMock(url, {
+      ...options,
+      ...(useProxy ? { dispatcher: { kind: "test-proxy" } } : {}),
+    })),
+  }));
   const { QoderExecutor } = await import("../../open-sse/executors/qoder.js");
   return new QoderExecutor();
 }
 
 afterEach(() => {
+  vi.doUnmock("../../open-sse/utils/proxyFetch.js");
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });

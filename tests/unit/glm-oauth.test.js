@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // (like kimi-usage.test.js) instead of stubbing global fetch for usage tests.
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
   proxyAwareFetch: vi.fn(),
+  installGlobalProxyFetch: vi.fn(),
   default: vi.fn(),
 }));
 

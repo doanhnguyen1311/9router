@@ -6,12 +6,12 @@
   "scripts": {
     "dev": "next dev --port 20127",
     "dev:webpack": "next dev --webpack --port 20127",
-    "build": "next build --webpack",
+    "build": "node scripts/build-isolated.mjs",
     "postbuild": "node scripts/copy-standalone-assets.mjs",
     "postbuild:bun": "node scripts/copy-standalone-assets.mjs",
     "start": "node custom-server.js --port 20127",
     "dev:bun": "bun --bun next dev --webpack --port 20127",
-    "build:bun": "bun --bun next build --webpack",
+    "build:bun": "bun scripts/build-isolated.mjs --bun",
     "start:bun": "bun ./.next/standalone/custom-server.js",
     "cli:pack": "npm --prefix cli run pack:cli",
     "cli:publish": "npm --prefix cli run publish:cli"
@@ -34,7 +34,7 @@
     "material-symbols": "^0.44.6",
     "monaco-editor": "^0.57.0",
     "next": "^16.4.2",
-    "node-forge": "^1.3.3",
+    "node-forge": "^1.4.3",
     "node-machine-id": "^1.1.12",
     "open": "^11.0.0",
     "ora": "^9.1.0",
@@ -44,7 +44,7 @@
     "recharts": "^3.7.0",
     "socks-proxy-agent": "^8.0.5",
     "sql.js": "^1.14.1",
-    "undici": "^8.12.3",
+    "undici": "^8.12.4",
     "uuid": "^13.0.0",
     "zustand": "^5.0.10"
   },

@@ -368,18 +368,16 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
   const errorSet = useMemo(() => new Set(errorKey ? [errorKey] : []), [errorKey]);
 
   // Track firstSeen per active provider; drop provider if running too long (BE stuck)
-  const firstSeenRef = useRef({});
+  const [firstSeen, setFirstSeen] = useState({});
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    const seen = firstSeenRef.current;
-    const now = Date.now();
-    for (const p of rawActiveSet) {
-      if (!seen[p]) seen[p] = now;
-    }
-    for (const p of Object.keys(seen)) {
-      if (!rawActiveSet.has(p)) delete seen[p];
-    }
+    setFirstSeen((previous) => {
+      const next = {};
+      const now = Date.now();
+      for (const provider of rawActiveSet) next[provider] = previous[provider] || now;
+      return next;
+    });
   }, [rawActiveSet]);
 
   useEffect(() => {
@@ -392,11 +390,11 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
     const now = Date.now();
     const filtered = new Set();
     for (const p of rawActiveSet) {
-      const ts = firstSeenRef.current[p];
+      const ts = firstSeen[p];
       if (!ts || now - ts < FE_ACTIVE_TIMEOUT_MS) filtered.add(p);
     }
     return filtered;
-  }, [rawActiveSet, tick]);
+  }, [rawActiveSet, firstSeen, tick]);
 
   const { nodes, edges } = useMemo(
     () => buildLayout(providers, activeSet, lastSet, errorSet),

@@ -1,5 +1,8 @@
-// Patch global fetch with proxy support (must be first)
-import "./utils/proxyFetch.js";
+// The public barrel is the explicit process-level opt-in for proxy-aware fetch.
+// Importing a helper/executor directly must not mutate globalThis.fetch.
+import { installGlobalProxyFetch } from "./utils/proxyFetch.js";
+
+installGlobalProxyFetch();
 
 // Config
 export { PROVIDERS } from "./config/providers.js";

@@ -128,4 +128,33 @@ describe("Schema migrations", () => {
     const idx = db2.all(`PRAGMA index_list(providerNodes)`).map(i => i.name);
     expect(idx).toContain("idx_pn_type");
   });
+
+  it("migration v4 removes plaintext API keys from usage history and daily rollups", async () => {
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    const rawKey = "sk-migration-secret-12345678";
+    db.run(
+      `INSERT INTO usageHistory(timestamp, provider, model, apiKey, promptTokens, completionTokens)
+       VALUES(?, 'openai', 'gpt-4', ?, 1, 2)`,
+      [new Date().toISOString(), rawKey],
+    );
+    db.run(
+      "INSERT OR REPLACE INTO usageDaily(dateKey, data) VALUES('2026-11-12', ?)",
+      [JSON.stringify({ byApiKey: { [`${rawKey}|gpt-4|openai`]: { requests: 1, rawModel: "gpt-4", provider: "openai", apiKey: rawKey } } })],
+    );
+    db.run("UPDATE _meta SET value='3' WHERE key='schemaVersion'");
+    db.close?.();
+
+    delete global._dbAdapter;
+    vi.resetModules();
+    const { getAdapter: reopen } = await import("@/lib/db/driver.js");
+    const migrated = await reopen();
+    const historyKey = migrated.get("SELECT apiKey FROM usageHistory LIMIT 1").apiKey;
+    const daily = migrated.get("SELECT data FROM usageDaily WHERE dateKey='2026-11-12'").data;
+
+    expect(historyKey).toMatch(/^h1:[a-f0-9]{64}$/);
+    expect(historyKey).not.toContain(rawKey);
+    expect(daily).not.toContain(rawKey);
+    expect(daily).toContain("sk-migra***5678");
+  });
 });

@@ -56,10 +56,14 @@ function getCandidatePaths(platform) {
     ];
   }
 
-  return [
-    join(home, ".config/Cursor/User/globalStorage/state.vscdb"),
-    join(home, ".config/cursor/User/globalStorage/state.vscdb"),
-  ];
+  if (platform === "linux") {
+    return [
+      join(home, ".config/Cursor/User/globalStorage/state.vscdb"),
+      join(home, ".config/cursor/User/globalStorage/state.vscdb"),
+    ];
+  }
+
+  return null;
 }
 
 const normalize = (value) => {
@@ -76,10 +80,10 @@ const normalize = (value) => {
  * Extract tokens via better-sqlite3 (bundled dependency).
  * This is the preferred strategy — no external CLI required.
  */
-function extractTokensViaBetterSqlite(dbPath) {
-  // Dynamic require so the route stays importable even if native bindings fail
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Database = require("better-sqlite3");
+async function extractTokensViaBetterSqlite(dbPath) {
+  // Optional native dependency: load only for this request so installs that use
+  // the sqlite3 CLI fallback can still import and build the route.
+  const { default: Database } = await import("better-sqlite3");
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 
   const query = (key) => {
@@ -97,20 +101,23 @@ function extractTokensViaBetterSqlite(dbPath) {
     }
   };
 
-  let accessToken = null;
-  for (const key of ACCESS_TOKEN_KEYS) {
-    const raw = query(key);
-    if (raw) { accessToken = normalize(raw); break; }
-  }
+  try {
+    let accessToken = null;
+    for (const key of ACCESS_TOKEN_KEYS) {
+      const raw = query(key);
+      if (raw) { accessToken = normalize(raw); break; }
+    }
 
-  let machineId = null;
-  for (const key of MACHINE_ID_KEYS) {
-    const raw = query(key);
-    if (raw) { machineId = normalize(raw); break; }
-  }
+    let machineId = null;
+    for (const key of MACHINE_ID_KEYS) {
+      const raw = query(key);
+      if (raw) { machineId = normalize(raw); break; }
+    }
 
-  db.close();
-  return { accessToken, machineId };
+    return { accessToken, machineId };
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -178,6 +185,12 @@ export async function GET() {
   try {
     const platform = process.platform;
     const candidates = getCandidatePaths(platform);
+    if (!candidates) {
+      return NextResponse.json(
+        { found: false, error: "Unsupported platform" },
+        { status: 400 },
+      );
+    }
 
     let dbPath = null;
     for (const candidate of candidates) {
@@ -220,7 +233,7 @@ export async function GET() {
 
     // Strategy 1: better-sqlite3 (bundled — no external tools required)
     try {
-      const tokens = extractTokensViaBetterSqlite(dbPath);
+      const tokens = await extractTokensViaBetterSqlite(dbPath);
       if (tokens.accessToken && tokens.machineId) {
         return NextResponse.json({
           found: true,

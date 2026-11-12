@@ -23,8 +23,9 @@ describe("AUDIT-002: API key masking", () => {
       path.resolve(REPO_ROOT, "src/lib/db/repos/usageRepo.js"),
       "utf-8"
     );
-    // The REST response should use apiKeyMasked
-    expect(source).toContain("apiKeyMasked: maskApiKey(r.apiKey)");
+    // The REST response resolves protected HMAC storage keys to a safe label.
+    expect(source).toContain("apiKeyMasked: safeStoredUsageKeyLabel(r.apiKey");
+    expect(source).toContain("usageApiKeyStorageKey(entry.apiKey)");
     // The return mapping in getUsageHistory should not have raw apiKey
     // (The internal ring buffer still uses apiKey: r.apiKey for internal state - that's fine)
     const historyReturn = source.match(/return rows\.map\(\(r\)\s*=>\s*\(\{[\s\S]*?\}\)\);/);

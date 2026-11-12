@@ -1,10 +1,17 @@
 import { NextResponse } from "next/server";
 import { getProjectIdentity } from "@/lib/projectMemory/identity.js";
 import { consumeProjectApiBudget } from "@/lib/projectMemory/rateLimit.js";
+import { isSameOriginMutation } from "@/lib/auth/sameOrigin.js";
 
 export const NO_STORE = { "Cache-Control": "private, no-store, max-age=0" };
 
 export async function requireIdentity(request) {
+  if (!isSameOriginMutation(request)) {
+    const error = new Error("Cross-origin project mutation rejected");
+    error.status = 403;
+    error.code = "CROSS_ORIGIN_MUTATION";
+    throw error;
+  }
   const identity = await getProjectIdentity(request);
   if (!identity) {
     const error = new Error("Authentication required");

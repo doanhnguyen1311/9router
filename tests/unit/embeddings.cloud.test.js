@@ -16,7 +16,9 @@
  * so tests run without Cloudflare Workers runtime.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 
 // ─── Module mocks (hoisted before imports) ───────────────────────────────────
 
@@ -39,30 +41,39 @@ vi.mock("../../open-sse/services/accountFallback.js", async (importOriginal) => 
   return actual;
 });
 
-vi.mock("../../cloud/src/utils/logger.js", () => ({
-  info: vi.fn(),
-  debug: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-}));
-
-vi.mock("../../cloud/src/utils/apiKey.js", () => ({
-  parseApiKey: vi.fn(),
-  extractBearerToken: vi.fn(),
-}));
-
-vi.mock("../../cloud/src/services/storage.js", () => ({
-  getMachineData: vi.fn(),
-  saveMachineData: vi.fn(),
-}));
-
 // ─── Imports (after mocks) ────────────────────────────────────────────────────
 
-import { handleEmbeddings } from "../../cloud/src/handlers/embeddings.js";
-import { getModelInfoCore } from "../../open-sse/services/model.js";
-import { handleEmbeddingsCore } from "../../open-sse/handlers/embeddingsCore.js";
-import { parseApiKey, extractBearerToken } from "../../cloud/src/utils/apiKey.js";
-import { getMachineData, saveMachineData } from "../../cloud/src/services/storage.js";
+let handleEmbeddings;
+let getModelInfoCore;
+let handleEmbeddingsCore;
+let parseApiKey;
+let extractBearerToken;
+let getMachineData;
+let saveMachineData;
+
+const cloudHandlerAvailable = existsSync(fileURLToPath(
+  new URL("../../cloud/src/handlers/embeddings.js", import.meta.url),
+));
+const describeCloud = cloudHandlerAvailable ? describe : describe.skip;
+
+describeCloud("Cloud embeddings handler (optional cloud checkout)", () => {
+beforeAll(async () => {
+  vi.doMock("../../cloud/src/utils/logger.js", () => ({
+    info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn(),
+  }));
+  vi.doMock("../../cloud/src/utils/apiKey.js", () => ({
+    parseApiKey: vi.fn(), extractBearerToken: vi.fn(),
+  }));
+  vi.doMock("../../cloud/src/services/storage.js", () => ({
+    getMachineData: vi.fn(), saveMachineData: vi.fn(),
+  }));
+
+  ({ handleEmbeddings } = await import("../../cloud/src/handlers/embeddings.js"));
+  ({ getModelInfoCore } = await import("../../open-sse/services/model.js"));
+  ({ handleEmbeddingsCore } = await import("../../open-sse/handlers/embeddingsCore.js"));
+  ({ parseApiKey, extractBearerToken } = await import("../../cloud/src/utils/apiKey.js"));
+  ({ getMachineData, saveMachineData } = await import("../../cloud/src/services/storage.js"));
+});
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -521,4 +532,5 @@ describe("handleEmbeddings — machineId override path", () => {
     const res = await handleEmbeddings(req, makeEnv(), {}, MACHINE_ID);
     expect(res.status).toBe(401);
   });
+});
 });

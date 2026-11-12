@@ -24,16 +24,25 @@ const SPECIALIZED = new Set([
 ]);
 
 // Per-process / per-request values: kimi's random device name, minimax's session UUID.
-const VOLATILE_HEADERS = new Set(["x-msh-device-name", "x-mavis-session-id"]);
+const VOLATILE_HEADERS = new Set([
+  "x-msh-device-name", "x-mavis-session-id", "x-conversation-id",
+  "x-conversation-message-id", "x-conversation-request-id", "x-request-id",
+]);
+const APP_VERSION_HEADERS = new Set(["x-client-version", "x-core-version", "x-msh-version"]);
 
 // Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) để snapshot ổn định.
 function sanitize(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
     if (VOLATILE_HEADERS.has(k.toLowerCase())) { out[k] = "<VOLATILE>"; continue; }
+    if (APP_VERSION_HEADERS.has(k.toLowerCase())) { out[k] = "<APP_VERSION>"; continue; }
+    if (k.toLowerCase() === "x-platform-version") { out[k] = "<RUNTIME>"; continue; }
+    // This header describes the machine running the test, not provider behavior.
+    if (k.toLowerCase() === "x-mavis-timezone-offset") { out[k] = "0"; continue; }
     out[k] = typeof v === "string"
       ? v.replace(/Bearer .+/, "Bearer <TOK>")
           .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
+          .replace(/9Router\/\d+\.\d+\.\d+/g, "9Router/<APP_VERSION>")
           .replace(/kimi-\d{10,}/g, "kimi-<TS>")
       : v;
   }

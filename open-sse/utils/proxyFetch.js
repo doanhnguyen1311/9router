@@ -537,9 +537,10 @@ async function patchedFetch(url, options = {}) {
   return proxyAwareFetch(url, options, null);
 }
 
-// Idempotency guard — only patch once to avoid wrapping multiple times
-if (globalThis.fetch !== patchedFetch) {
-  globalThis.fetch = patchedFetch;
+export function installGlobalProxyFetch({ force = false } = {}) {
+  if (!force && process.env.NINE_ROUTER_DISABLE_GLOBAL_FETCH_PATCH === "1") return globalThis.fetch;
+  if (globalThis.fetch !== patchedFetch) globalThis.fetch = patchedFetch;
+  return patchedFetch;
 }
 
 export default patchedFetch;

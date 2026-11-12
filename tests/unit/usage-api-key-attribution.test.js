@@ -45,8 +45,19 @@ describe("Usage stats API key attribution", () => {
 
     const stats = await db.getUsageStats("24h");
     const apiKeyEntries = Object.values(stats.byApiKey);
+    const adapter = await (await import("@/lib/db/driver.js")).getAdapter();
+    const storedKeys = adapter.all("SELECT apiKey FROM usageHistory ORDER BY id").map((row) => row.apiKey);
+    const daily = adapter.get("SELECT data FROM usageDaily LIMIT 1")?.data || "";
 
     expect(apiKeyEntries).toHaveLength(2);
+    expect(storedKeys).toHaveLength(2);
+    expect(storedKeys.every((key) => /^h1:[a-f0-9]{64}$/.test(key))).toBe(true);
+    expect(storedKeys).not.toContain(apiKeyA);
+    expect(storedKeys).not.toContain(apiKeyB);
+    expect(daily).not.toContain(apiKeyA);
+    expect(daily).not.toContain(apiKeyB);
+    expect(Object.keys(stats.byApiKey).join("\n")).not.toContain(apiKeyA);
+    expect(Object.keys(stats.byApiKey).join("\n")).not.toContain(apiKeyB);
 
     expect(
       apiKeyEntries

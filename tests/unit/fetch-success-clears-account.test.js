@@ -91,6 +91,7 @@ describe("web fetch account state", () => {
       "jina-reader",
       expect.any(Set),
       "webfetch:jina-reader",
+      { allowedConnectionIds: undefined },
     );
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });

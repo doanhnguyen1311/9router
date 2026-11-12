@@ -23,9 +23,7 @@ describe("Gemini request tool results (#2393)", () => {
   it.each(["user", "model"])("keeps co-located text with its original %s role", (role) => {
     expect(convert([{ text: "before" }, response("read", "done"), { text: "after" }], role)).toEqual([
       { role: "tool", tool_call_id: "call_read", content: '"done"' },
-      { role: role === "model" ? "assistant" : "user", content: [
-        { type: "text", text: "before" }, { type: "text", text: "after" },
-      ] },
+      { role: role === "model" ? "assistant" : "user", content: "before\nafter" },
     ]);
   });
 
