@@ -188,6 +188,7 @@ export async function exportDb() {
       planOptions: db.all(`SELECT * FROM planOptions`),
       planAuditLogs: db.all(`SELECT * FROM planAuditLogs`),
       planApprovals: db.all(`SELECT * FROM planApprovals`),
+      planExecutions: db.all(`SELECT * FROM planExecutions`),
     },
   };
 
@@ -435,6 +436,7 @@ export async function importDb(payload) {
       insertRawRows("planOptions", projectDump.planOptions);
       insertRawRows("planAuditLogs", projectDump.planAuditLogs);
       insertRawRows("planApprovals", projectDump.planApprovals);
+      insertRawRows("planExecutions", projectDump.planExecutions);
       for (const row of db.all("SELECT projectId, id, subject, value FROM memoryItems")) {
         upsertSearchDocumentInTransaction(db, { projectId: row.projectId, kind: "memory", refId: row.id, title: row.subject, body: row.value });
       }

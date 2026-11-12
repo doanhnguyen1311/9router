@@ -160,7 +160,7 @@ describe("Human approval state machine", () => {
     expect(raw.nonceHash).toMatch(/^[a-f0-9]{64}$/);
     expect(raw.nonceHash).not.toContain("approval-race-nonce");
     expect(adapter.get("SELECT COUNT(*) AS count FROM planApprovals WHERE planId=?", [plan.id]).count).toBe(1);
-    expect(adapter.get("SELECT name FROM sqlite_master WHERE type='table' AND name='planExecutions'")).toBeUndefined();
+    expect(adapter.get("SELECT COUNT(*) AS count FROM planExecutions WHERE planId=?", [plan.id]).count).toBe(0);
 
     const backup = await database.exportDb();
     expect(backup.projectMemory.planApprovals).toHaveLength(1);
