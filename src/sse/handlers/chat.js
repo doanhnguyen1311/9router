@@ -252,7 +252,7 @@ async function handleChatRequest(request, clientRawRequest = null, historyBody =
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, allowedConnectionIds = undefined) {
+export async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, allowedConnectionIds = undefined, options = {}) {
   const effortPolicy = getKeyEffortPolicy(request);
   modelStr = effortRoutingModel(modelStr, effortPolicy);
   const modelInfo = await getModelInfo(modelStr);
@@ -386,6 +386,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     // Use shared chatCore
     const chatSettings = await getSettings();
+    const requestTransformsDisabled = options.disableRequestTransforms === true;
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const observer = getHistoryObserver(request);
     const historyAttempt = observer?.attempt(provider, model);
@@ -401,27 +402,28 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       userAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
-      rtkEnabled: !!chatSettings.rtkEnabled,
-      headroomEnabled: !!chatSettings.headroomEnabled,
+      rtkEnabled: !requestTransformsDisabled && !!chatSettings.rtkEnabled,
+      headroomEnabled: !requestTransformsDisabled && !!chatSettings.headroomEnabled,
       headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
       headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
       headroomTimeoutMs: chatSettings.headroomTimeoutMs,
-      cavemanEnabled: !!chatSettings.cavemanEnabled,
+      cavemanEnabled: !requestTransformsDisabled && !!chatSettings.cavemanEnabled,
       cavemanLevel: chatSettings.cavemanLevel || "full",
-      ponytailEnabled: !!chatSettings.ponytailEnabled,
+      ponytailEnabled: !requestTransformsDisabled && !!chatSettings.ponytailEnabled,
       ponytailLevel: chatSettings.ponytailLevel || "full",
-      customPromptEnabled: !!chatSettings.customPromptEnabled,
+      customPromptEnabled: !requestTransformsDisabled && !!chatSettings.customPromptEnabled,
       customPrompt: chatSettings.customPrompt || "",
-      pxpipeEnabled: !!chatSettings.pxpipeEnabled,
+      pxpipeEnabled: !requestTransformsDisabled && !!chatSettings.pxpipeEnabled,
       pxpipeMinChars: chatSettings.pxpipeMinChars,
       pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
       // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+      pxpipeTransform: !requestTransformsDisabled && chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
       keyEffort: keyEffort.effort,
       // Per-provider user overrides (custom headers / connect timeout) from settings
       providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
+      signal: options.signal || null,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {

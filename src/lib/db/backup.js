@@ -51,10 +51,19 @@ export function backupDbLite(adapter, destDir, destName = "data.sqlite") {
       .filter((t) => !excluded.has(t.name) && !t.name.startsWith("projectSearch"));
 
     adapter.transaction(() => {
+      // Create every table before copying any rows. Forward and cyclic foreign
+      // keys (for example a plan selecting an option that belongs to the plan)
+      // are valid once the complete backup graph exists, but copying one table
+      // immediately after creating it can reference a table not created yet.
       for (const t of tables) {
-        // Recreate table structure in backup DB, then copy rows.
         const createSql = t.sql.replace(/CREATE TABLE\s+/i, "CREATE TABLE bak.");
         adapter.exec(createSql);
+      }
+      // SQLite normally checks each INSERT immediately. Defer the checks until
+      // commit so mutually-referencing rows can be copied in a single atomic
+      // snapshot; the commit still fails if the final graph is invalid.
+      adapter.exec("PRAGMA defer_foreign_keys = ON");
+      for (const t of tables) {
         adapter.exec(`INSERT INTO bak.${t.name} SELECT * FROM main.${t.name}`);
       }
     });

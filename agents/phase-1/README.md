@@ -1,7 +1,18 @@
 # Phase 1 — Planning foundation
 
-Status: `READY`
+Status: `PASS`
 
-Starting checkpoint: `e5d602f3` (Phase 0 PASS).
+Starting checkpoint: `1ecf1c40643b3276a2572ebc5809b416a29a6ded` (Phase 0 reports checkpoint).
 
-Scope after Phase 0 passes: planning-provider abstraction, bounded project-context retrieval, intent/options/revisions, SQLite persistence, state machine, versioned API, RBAC, recovery and concurrency tests. Codex execution is explicitly out of scope for this phase.
+Completed scope: planning-provider abstraction, bounded project-context retrieval, structured intent/options/revisions, SQLite persistence, state machine, versioned API, RBAC, recovery, concurrency and production-router integration tests. Codex execution remains explicitly out of scope.
+
+Primary evidence:
+
+- [`phase-report.md`](./phase-report.md)
+- [`quality-gate.md`](./quality-gate.md)
+- [`test-report.md`](./test-report.md)
+- [`security-review.md`](./security-review.md)
+- [`performance-assessment.md`](./performance-assessment.md)
+- [`migration-verification.md`](./migration-verification.md)
+- [`rollback-strategy.md`](./rollback-strategy.md)
+- [`phase-2-plan.md`](./phase-2-plan.md)

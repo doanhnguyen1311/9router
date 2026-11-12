@@ -168,7 +168,12 @@ try {
   const timer = setInterval(cleanup, 60000); timer.unref();
   parentPort.on('message', args => {
     try {
-      if (args.type === 'config') { config = args.config; cleanup(); return; }
+      if (args.type === 'config') {
+        config = args.config;
+        cleanup();
+        parentPort.postMessage({ type: 'configured' });
+        return;
+      }
       if (args.type === 'batch') {
         let saved = 0, dropped = 0;
         for (const json of args.records.slice(0, limits.batchRecords)) { try { write(json); saved++; } catch { dropped++; warn(); } }

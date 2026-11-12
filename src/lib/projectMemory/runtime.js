@@ -82,7 +82,7 @@ export async function prepareProjectRequest({ request, body, keyRecord, clientSe
     sessionId: session.id,
     operation: "retrieval",
     durationMs: context.durationMs,
-    itemCount: context.memories + context.files + context.dependencies + context.entities,
+    itemCount: context.memories + context.files + (context.symbols || 0) + context.dependencies + context.entities,
     tokenEstimate: context.tokenEstimate,
     status: "ok",
     metadata: { terms: context.terms.length },

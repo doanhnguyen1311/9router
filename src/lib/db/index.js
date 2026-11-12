@@ -176,6 +176,10 @@ export async function exportDb() {
       projectFileDependencies: db.all(`SELECT * FROM projectFileDependencies`),
       contextSnapshots: db.all(`SELECT * FROM contextSnapshots`),
       memoryUsage: db.all(`SELECT * FROM memoryUsage`),
+      executionPlans: db.all(`SELECT * FROM executionPlans`),
+      planRevisions: db.all(`SELECT * FROM planRevisions`),
+      planOptions: db.all(`SELECT * FROM planOptions`),
+      planAuditLogs: db.all(`SELECT * FROM planAuditLogs`),
     },
   };
 
@@ -212,6 +216,10 @@ export async function importDb(payload) {
       ? payload.projectMemory
       : null;
     if (projectDump) {
+      // Planning introduces a valid cycle: a plan may select an option, and
+      // that option belongs to the plan. Defer FK checks until the complete
+      // project graph has been restored atomically.
+      db.exec("PRAGMA defer_foreign_keys = ON");
       // One root delete cascades every project-owned row and API-key mapping.
       db.run(`DELETE FROM projects`);
       db.run(`DELETE FROM projectPermissions`);
@@ -401,6 +409,10 @@ export async function importDb(payload) {
       insertRawRows("projectFileDependencies", projectDump.projectFileDependencies);
       insertRawRows("contextSnapshots", projectDump.contextSnapshots);
       insertRawRows("memoryUsage", projectDump.memoryUsage);
+      insertRawRows("executionPlans", projectDump.executionPlans);
+      insertRawRows("planRevisions", projectDump.planRevisions);
+      insertRawRows("planOptions", projectDump.planOptions);
+      insertRawRows("planAuditLogs", projectDump.planAuditLogs);
       for (const row of db.all("SELECT projectId, id, subject, value FROM memoryItems")) {
         upsertSearchDocumentInTransaction(db, { projectId: row.projectId, kind: "memory", refId: row.id, title: row.subject, body: row.value });
       }

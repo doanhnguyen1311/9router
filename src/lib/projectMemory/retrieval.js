@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "@/lib/db/driver.js";
 import { searchProjectIndex } from "./searchIndex.js";
+import { redactProjectText } from "./privacy.js";
 
 const STOP_WORDS = new Set(["the", "and", "for", "with", "this", "that", "from", "what", "which", "các", "cho", "với", "này", "những", "một", "là", "và"]);
 
@@ -15,10 +16,11 @@ function tokenEstimate(text) {
 }
 
 function safeContextText(value) {
-  return String(value || "")
+  const normalized = String(value || "")
     .replace(/\u0000/g, "")
     .replace(/\[\/?(?:BEGIN|END) 9ROUTER PROJECT CONTEXT\]/gi, "(project-context delimiter removed)")
     .slice(0, 4000);
+  return redactProjectText(normalized).text;
 }
 
 function scoreMemory(row, terms) {
@@ -42,6 +44,19 @@ function scoreFile(row, terms) {
     if (path === term) score += 60;
     else if (path.includes(term)) score += 25;
     if (content.includes(term)) score += 5;
+  }
+  return score;
+}
+
+function scoreSymbol(row, terms, selectedFileIds) {
+  let score = selectedFileIds.has(row.fileId) ? 20 : 0;
+  const name = String(row.name || "").toLowerCase();
+  const qualifiedName = String(row.qualifiedName || "").toLowerCase();
+  const signature = String(row.signature || "").toLowerCase();
+  for (const term of terms) {
+    if (name === term || qualifiedName === term) score += 60;
+    else if (name.includes(term) || qualifiedName.includes(term)) score += 30;
+    if (signature.includes(term)) score += 10;
   }
   return score;
 }
@@ -76,14 +91,38 @@ export async function retrieveProjectContext({ projectId, query, tokenBudget = 1
   }
 
   const fileIds = files.map((file) => file.id);
-  const dependencies = fileIds.length ? db.all(
+  let symbols = [];
+  if (terms.length || fileIds.length) {
+    const conditions = [];
+    const symbolParams = [projectId];
+    if (fileIds.length) {
+      conditions.push(`s.fileId IN (${fileIds.map(() => "?").join(",")})`);
+      symbolParams.push(...fileIds);
+    }
+    if (terms.length) {
+      const clauses = terms.slice(0, 6).map(() => "(lower(s.name) LIKE ? OR lower(COALESCE(s.qualifiedName,'')) LIKE ? OR lower(COALESCE(s.signature,'')) LIKE ?)");
+      conditions.push(`(${clauses.join(" OR ")})`);
+      symbolParams.push(...terms.slice(0, 6).flatMap((term) => [`%${term}%`, `%${term}%`, `%${term}%`]));
+    }
+    symbols = db.all(
+      `SELECT s.id, s.fileId, s.symbolType, s.name, s.qualifiedName, s.lineStart, s.lineEnd, s.signature,
+        pf.relativePath AS filePath
+       FROM projectSymbols s JOIN projectFiles pf ON pf.id=s.fileId
+       WHERE s.projectId=? AND (${conditions.join(" OR ")}) LIMIT 80`,
+      symbolParams,
+    ).map((row) => ({ ...row, score: scoreSymbol(row, terms, new Set(fileIds)) }))
+      .sort((a, b) => b.score - a.score).slice(0, 30);
+  }
+
+  const relationshipFileIds = [...new Set([...fileIds, ...symbols.map((symbol) => symbol.fileId)])];
+  const dependencies = relationshipFileIds.length ? db.all(
     `SELECT d.*, sf.relativePath AS sourcePath, tf.relativePath AS targetPath
      FROM projectFileDependencies d
      JOIN projectFiles sf ON sf.id=d.sourceFileId
      LEFT JOIN projectFiles tf ON tf.id=d.targetFileId
-     WHERE d.projectId=? AND (d.sourceFileId IN (${fileIds.map(() => "?").join(",")})
-       OR d.targetFileId IN (${fileIds.map(() => "?").join(",")})) LIMIT ?`,
-    [projectId, ...fileIds, ...fileIds, Math.max(20, Number(maxGraphDepth) * 20)],
+     WHERE d.projectId=? AND (d.sourceFileId IN (${relationshipFileIds.map(() => "?").join(",")})
+       OR d.targetFileId IN (${relationshipFileIds.map(() => "?").join(",")})) LIMIT ?`,
+    [projectId, ...relationshipFileIds, ...relationshipFileIds, Math.max(20, Number(maxGraphDepth) * 20)],
   ) : [];
 
   const entityClauses = terms.slice(0, 6).map(() => "normalizedName LIKE ?");
@@ -101,6 +140,11 @@ export async function retrieveProjectContext({ projectId, query, tokenBudget = 1
   if (files.length) {
     sections.push("Relevant indexed files:\n" + files.map((file) =>
       `- ${safeContextText(file.relativePath)}${file.language ? ` (${file.language})` : ""}`,
+    ).join("\n"));
+  }
+  if (symbols.length) {
+    sections.push("Relevant indexed symbols:\n" + symbols.map((symbol) =>
+      `- ${safeContextText(symbol.filePath)}:${symbol.lineStart || "?"} ${safeContextText(symbol.symbolType)} ${safeContextText(symbol.qualifiedName || symbol.name)}${symbol.signature ? ` — ${safeContextText(symbol.signature)}` : ""}`,
     ).join("\n"));
   }
   if (dependencies.length) {
@@ -132,13 +176,27 @@ export async function retrieveProjectContext({ projectId, query, tokenBudget = 1
   return {
     hasContext,
     content: hasContext ? content : "",
+    contentHash: hasContext ? crypto.createHash("sha256").update(content).digest("hex") : null,
     tokenEstimate: hasContext ? tokenEstimate(content) : 0,
     memories: memories.length,
     files: files.length,
+    symbols: symbols.length,
     dependencies: dependencies.length,
     entities: entities.length,
     durationMs: Date.now() - started,
     terms,
+    provenance: {
+      memories: memories.map((item) => ({ id: item.id, sourceType: item.sourceType, score: item.score })),
+      files: files.map((file) => ({ id: file.id, path: file.relativePath, contentHash: file.contentHash, score: file.score })),
+      symbols: symbols.map((symbol) => ({ id: symbol.id, fileId: symbol.fileId, score: symbol.score })),
+      dependencies: dependencies.map((dependency) => ({
+        id: dependency.id,
+        sourceFileId: dependency.sourceFileId,
+        targetFileId: dependency.targetFileId,
+        evidenceType: dependency.evidenceType,
+      })),
+      entities: entities.map((entity) => ({ id: entity.id, entityType: entity.entityType })),
+    },
   };
 }
 
@@ -189,22 +247,25 @@ export function injectProjectContext(body, context) {
   return next;
 }
 
-export async function saveContextSnapshot({ projectId, sessionId, content, tokenEstimate: tokens }) {
+export async function saveContextSnapshot({ projectId, sessionId = null, content, tokenEstimate: tokens, snapshotType = "retrieval" }) {
   if (!content) return null;
   const db = await getAdapter();
+  const type = typeof snapshotType === "string" && /^[a-z][a-z0-9-]{0,39}$/.test(snapshotType)
+    ? snapshotType
+    : "retrieval";
   const contentHash = crypto.createHash("sha256").update(content).digest("hex");
   const existing = db.get(
-    `SELECT * FROM contextSnapshots WHERE projectId=? AND snapshotType='retrieval'
+    `SELECT * FROM contextSnapshots WHERE projectId=? AND snapshotType=?
      AND ((sessionId IS NULL AND ? IS NULL) OR sessionId=?) AND contentHash=? ORDER BY version DESC LIMIT 1`,
-    [projectId, sessionId, sessionId, contentHash],
+    [projectId, type, sessionId, sessionId, contentHash],
   );
   if (existing) return existing;
   const version = (db.get(
-    `SELECT MAX(version) AS version FROM contextSnapshots WHERE projectId=? AND snapshotType='retrieval'
+    `SELECT MAX(version) AS version FROM contextSnapshots WHERE projectId=? AND snapshotType=?
      AND ((sessionId IS NULL AND ? IS NULL) OR sessionId=?)`,
-    [projectId, sessionId, sessionId],
+    [projectId, type, sessionId, sessionId],
   )?.version || 0) + 1;
-  const snapshot = { id: uuidv4(), projectId, sessionId, snapshotType: "retrieval", version, contentHash, content, tokenEstimate: tokens, status: "active", createdAt: new Date().toISOString() };
+  const snapshot = { id: uuidv4(), projectId, sessionId, snapshotType: type, version, contentHash, content, tokenEstimate: tokens, status: "active", createdAt: new Date().toISOString() };
   db.run(
     `INSERT INTO contextSnapshots(id, projectId, sessionId, snapshotType, version, contentHash, content, tokenEstimate, status, createdAt)
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -222,4 +283,4 @@ export async function recordMemoryUsage({ projectId, sessionId = null, operation
   );
 }
 
-export const __test__ = { termsFromQuery, safeContextText, tokenEstimate, scoreMemory, scoreFile };
+export const __test__ = { termsFromQuery, safeContextText, tokenEstimate, scoreMemory, scoreFile, scoreSymbol };

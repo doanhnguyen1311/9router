@@ -15,11 +15,17 @@ function getTimeString() {
  * @param {string} options.provider - Provider name
  * @param {string} options.model - Model name
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
+export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "", signal = null } = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
   let abortTimeout = null;
+  const abortFromExternalSignal = () => abortController.abort(signal?.reason);
+  if (signal) {
+    if (signal.aborted) abortFromExternalSignal();
+    else signal.addEventListener("abort", abortFromExternalSignal, { once: true });
+  }
+  const detachExternalSignal = () => signal?.removeEventListener?.("abort", abortFromExternalSignal);
 
   // Only abnormal terminations are logged; normal completion is covered by "📊 done".
   // isError uses errorLine (always shown, ignores LOG_LEVEL) so failures survive quiet levels.
@@ -40,6 +46,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleDisconnect: (reason = "client_closed") => {
       if (disconnected) return;
       disconnected = true;
+      detachExternalSignal();
 
       // Debug-only: Responses API has no [DONE] sentinel, so codex/droid close the
       // socket on every completed request. "📊 done" is the authoritative outcome line.
@@ -57,6 +64,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleComplete: () => {
       if (disconnected) return;
       disconnected = true;
+      detachExternalSignal();
 
       if (abortTimeout) {
         clearTimeout(abortTimeout);
@@ -68,6 +76,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleError: (error) => {
       if (disconnected) return;
       disconnected = true;
+      detachExternalSignal();
 
       if (abortTimeout) {
         clearTimeout(abortTimeout);
@@ -83,7 +92,10 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       onError?.(error);
     },
 
-    abort: () => abortController.abort()
+    abort: () => {
+      detachExternalSignal();
+      abortController.abort();
+    }
   };
 }
 

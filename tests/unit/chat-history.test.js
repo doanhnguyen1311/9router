@@ -229,6 +229,7 @@ class ControlledWorker extends EventEmitter {
   constructor() { super(); queueMicrotask(() => this.emit('message', { type: 'ready' })); }
   postMessage(message, transfer = []) {
     this.messages.push(structuredClone(message, { transfer }));
+    if (message.type === 'config') queueMicrotask(() => this.emit('message', { type: 'configured' }));
     if (message.type === 'close') queueMicrotask(() => this.emit('message', { id: message.id, result: true }));
   }
   unref() {}

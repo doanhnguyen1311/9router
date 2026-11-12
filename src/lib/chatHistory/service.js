@@ -41,7 +41,12 @@ export class HistoryService {
       const worker = this.workerFactory(); this.worker = worker;
       worker.on('message', msg => {
         if (this.worker !== worker) return;
-        if (msg.type === 'ready') { this.ready = true; worker.postMessage({ type: 'config', config: this.config }); }
+        // The worker's schema is ready before its initial retention cleanup is
+        // finished. Do not expose the service as ready until that configuration
+        // write has completed, otherwise an immediate caller can race the
+        // cleanup transaction and receive SQLITE_BUSY.
+        if (msg.type === 'ready') worker.postMessage({ type: 'config', config: this.config });
+        if (msg.type === 'configured') this.ready = true;
         if (msg.type === 'batch') {
           if (this.inFlight) this.bytes -= this.inFlight.bytes;
           this.inFlight = null; clearTimeout(this.watchdog);
