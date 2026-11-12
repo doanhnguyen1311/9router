@@ -51,6 +51,7 @@ import {
   prepareProjectRequest,
   recordProjectRouteForRequest,
 } from "@/lib/projectMemory/runtime.js";
+import { orchestratePlanningRequest } from "@/lib/planning/orchestration.js";
 
 /**
  * Handle chat completion request
@@ -139,6 +140,22 @@ async function handleChatRequest(request, clientRawRequest = null, historyBody =
 
   const quotaDenied = await enforceApiKeyQuota(request);
   if (quotaDenied) return quotaDenied;
+
+  // Planning-enabled keys opt into a distinct request protocol. ADAPTIVE
+  // requests are planned before the requested execution model is contacted;
+  // MANUAL requests require X-9Router-Planning: plan. OFF stays on the exact
+  // historical inference path.
+  const planning = await orchestratePlanningRequest({
+    request,
+    body,
+    keyRecord: identifiedKeyRecord,
+    sessionId,
+    endpoint: new URL(request.url).pathname,
+  });
+  if (planning.handled) return planning.response;
+  if (planning.fallbackError) {
+    log.warn("PLANNING", `provider failed; continuing legacy path: ${planning.fallbackError.code || planning.fallbackError.message}`);
+  }
 
   // Project Memory is strictly opt-in. An unassigned key skips this branch;
   // assigned-project failures are isolated from the provider request.

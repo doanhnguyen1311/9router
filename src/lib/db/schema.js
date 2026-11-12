@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -511,6 +511,23 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_execution_plans_status ON executionPlans(projectId, status, updatedAt DESC)",
       "CREATE INDEX IF NOT EXISTS idx_execution_plans_creator ON executionPlans(createdBy, updatedAt DESC)",
       "CREATE INDEX IF NOT EXISTS idx_execution_plans_expiry ON executionPlans(status, expiresAt) WHERE expiresAt IS NOT NULL",
+    ],
+  },
+  planningRequestBindings: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      planId: "TEXT NOT NULL UNIQUE REFERENCES executionPlans(id) ON DELETE CASCADE",
+      projectId: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+      apiKeyId: "TEXT NOT NULL REFERENCES apiKeys(id) ON DELETE CASCADE",
+      requestKeyHash: "TEXT NOT NULL",
+      clientSessionHash: "TEXT",
+      sourceEndpoint: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_planning_request_key ON planningRequestBindings(apiKeyId, requestKeyHash)",
+      "CREATE INDEX IF NOT EXISTS idx_planning_request_project ON planningRequestBindings(projectId, createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_planning_request_session ON planningRequestBindings(apiKeyId, clientSessionHash, createdAt DESC) WHERE clientSessionHash IS NOT NULL",
     ],
   },
   planRevisions: {

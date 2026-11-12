@@ -14,6 +14,7 @@ import {
   commitPlanRevision,
   createDraftPlan,
   decidePlanApproval,
+  findPlanByRequestBinding,
   getPlan as getPlanRecord,
   listPlanOptions,
   listPlanRevisions,
@@ -56,7 +57,12 @@ function loadPlanningContextSnapshot(plan) {
   });
 }
 
-export async function createPlan(projectId, input, identity, { provider = getPlanningProvider(), signal = null } = {}) {
+export async function createPlan(projectId, input, identity, {
+  provider = getPlanningProvider(),
+  signal = null,
+  apiKeyId = null,
+  requestBinding = null,
+} = {}) {
   const originalRequest = cleanRequiredText(input?.originalRequest, "originalRequest", PLAN_LIMITS.originalRequestChars);
   const providerId = cleanRequiredText(input?.providerId, "providerId", PLAN_LIMITS.providerIdChars);
   const modelId = cleanRequiredText(input?.modelId, "modelId", PLAN_LIMITS.modelIdChars);
@@ -73,10 +79,39 @@ export async function createPlan(projectId, input, identity, { provider = getPla
     PLAN_LIMITS.defaultExpirationMinutes,
   );
   await requireProjectRole(projectId, identity.principalId, ["owner", "editor"]);
+  if (requestBinding?.requestKeyHash && apiKeyId) {
+    const existing = await findPlanByRequestBinding({
+      projectId,
+      apiKeyId,
+      requestKeyHash: requestBinding.requestKeyHash,
+    }, identity);
+    if (existing) return existing;
+  }
   await provider.validateCapabilities({ providerId, modelId });
   const context = await buildPlanningContext({ projectId, query: originalRequest, tokenBudget: input?.contextTokenBudget });
   const expiresAt = new Date(Date.now() + expirationMinutes * 60_000).toISOString();
-  const draft = await createDraftPlan({ projectId, originalRequest, providerId, modelId, context, expiresAt }, identity);
+  let draft;
+  try {
+    draft = await createDraftPlan({
+      projectId,
+      originalRequest,
+      providerId,
+      modelId,
+      context,
+      expiresAt,
+      apiKeyId,
+      requestBinding: requestBinding ? { ...requestBinding, apiKeyId } : null,
+    }, identity);
+  } catch (error) {
+    if (error?.code !== "PLANNING_REQUEST_CONFLICT" || !requestBinding?.requestKeyHash || !apiKeyId) throw error;
+    const existing = await findPlanByRequestBinding({
+      projectId,
+      apiKeyId,
+      requestKeyHash: requestBinding.requestKeyHash,
+    }, identity);
+    if (existing) return existing;
+    throw error;
+  }
   try {
     const generated = await provider.generatePlan({
       providerId,

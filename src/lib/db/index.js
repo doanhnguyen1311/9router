@@ -184,6 +184,7 @@ export async function exportDb() {
       contextSnapshots: db.all(`SELECT * FROM contextSnapshots`),
       memoryUsage: db.all(`SELECT * FROM memoryUsage`),
       executionPlans: db.all(`SELECT * FROM executionPlans`),
+      planningRequestBindings: db.all(`SELECT * FROM planningRequestBindings`),
       planRevisions: db.all(`SELECT * FROM planRevisions`),
       planOptions: db.all(`SELECT * FROM planOptions`),
       planAuditLogs: db.all(`SELECT * FROM planAuditLogs`),
@@ -440,6 +441,7 @@ export async function importDb(payload) {
       insertRawRows("contextSnapshots", projectDump.contextSnapshots);
       insertRawRows("memoryUsage", projectDump.memoryUsage);
       insertRawRows("executionPlans", projectDump.executionPlans);
+      insertRawRows("planningRequestBindings", projectDump.planningRequestBindings);
       insertRawRows("planRevisions", projectDump.planRevisions);
       insertRawRows("planOptions", projectDump.planOptions);
       insertRawRows("planAuditLogs", projectDump.planAuditLogs);

@@ -1,5 +1,9 @@
 // Transform OpenAI SSE stream to Ollama JSON lines format
 export function transformToOllama(response, model) {
+  // Planning is a 9Router control-plane envelope, not an OpenAI model
+  // response. Preserve it so planning-aware Ollama clients receive the same
+  // planId/options protocol as every other opted-in inference endpoint.
+  if (response.headers.get("x-9router-plan-id")) return response;
   let buffer = "";
   let pendingToolCalls = {};
   

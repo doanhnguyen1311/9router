@@ -101,34 +101,74 @@ export async function createDraftPlan({
   context,
   expiresAt,
   apiKeyId = null,
+  requestBinding = null,
 }, identity) {
   await requireWrite(projectId, identity);
+  if (requestBinding && (!apiKeyId || requestBinding.apiKeyId !== apiKeyId)) {
+    throw planningError("PLANNING_REQUEST_INVALID", "Planning request binding must match the API key", 400);
+  }
   const db = await getAdapter();
   const id = uuidv4();
   const now = new Date().toISOString();
-  db.transaction(() => {
-    db.run(
-      `INSERT INTO executionPlans(
-        id, projectId, createdBy, apiKeyId, providerId, modelId, status, version, currentRevision,
-        originalRequest, contextSnapshotId, contextHash, contextTokenEstimate, expiresAt, createdAt, updatedAt
-       ) VALUES(?, ?, ?, ?, ?, ?, 'DRAFT', 1, 0, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id, projectId, identity.principalId, apiKeyId, providerId, modelId, originalRequest,
-        context?.snapshot?.id || null, context?.contentHash || null, context?.tokenEstimate || 0,
-        expiresAt, now, now,
-      ],
-    );
-    audit(db, {
-      planId: id,
-      projectId,
-      actorId: identity.principalId,
-      eventType: "PLAN_CREATED",
-      toStatus: "DRAFT",
-      planVersion: 1,
-      metadata: { providerId, modelId, contextSnapshotId: context?.snapshot?.id || null },
+  try {
+    db.transaction(() => {
+      db.run(
+        `INSERT INTO executionPlans(
+          id, projectId, createdBy, apiKeyId, providerId, modelId, status, version, currentRevision,
+          originalRequest, contextSnapshotId, contextHash, contextTokenEstimate, expiresAt, createdAt, updatedAt
+         ) VALUES(?, ?, ?, ?, ?, ?, 'DRAFT', 1, 0, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, projectId, identity.principalId, apiKeyId, providerId, modelId, originalRequest,
+          context?.snapshot?.id || null, context?.contentHash || null, context?.tokenEstimate || 0,
+          expiresAt, now, now,
+        ],
+      );
+      if (requestBinding) {
+        db.run(
+          `INSERT INTO planningRequestBindings(
+            id, planId, projectId, apiKeyId, requestKeyHash, clientSessionHash, sourceEndpoint, createdAt
+           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            uuidv4(), id, projectId, apiKeyId, requestBinding.requestKeyHash,
+            requestBinding.clientSessionHash || null, requestBinding.sourceEndpoint, now,
+          ],
+        );
+      }
+      audit(db, {
+        planId: id,
+        projectId,
+        actorId: identity.principalId,
+        eventType: "PLAN_CREATED",
+        toStatus: "DRAFT",
+        planVersion: 1,
+        metadata: {
+          providerId,
+          modelId,
+          contextSnapshotId: context?.snapshot?.id || null,
+          source: requestBinding ? "inference-request" : "planning-api",
+          sourceEndpoint: requestBinding?.sourceEndpoint || null,
+        },
+      });
     });
-  });
+  } catch (error) {
+    if (requestBinding && /planningRequestBindings|idx_planning_request_key/i.test(String(error?.message || ""))) {
+      throw planningError("PLANNING_REQUEST_CONFLICT", "This inference request is already bound to a plan", 409);
+    }
+    throw error;
+  }
   return parsePlanRow(db.get("SELECT * FROM executionPlans WHERE id=?", [id]));
+}
+
+export async function findPlanByRequestBinding({ projectId, apiKeyId, requestKeyHash }, identity) {
+  if (!projectId || !apiKeyId || !requestKeyHash) return null;
+  await requireRead(projectId, identity);
+  const db = await getAdapter();
+  const binding = db.get(
+    `SELECT planId FROM planningRequestBindings
+     WHERE projectId=? AND apiKeyId=? AND requestKeyHash=?`,
+    [projectId, apiKeyId, requestKeyHash],
+  );
+  return binding ? getPlan(projectId, binding.planId, identity) : null;
 }
 
 export async function commitPlanRevision({

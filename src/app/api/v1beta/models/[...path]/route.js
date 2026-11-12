@@ -107,6 +107,10 @@ export async function POST(request, { params }) {
 
     const response = await handleChat(newRequest, null, { ...body, model });
 
+    // Planning responses are endpoint-independent control-plane envelopes.
+    // They must not be consumed by the OpenAI→Gemini model-response adapter.
+    if (response.headers.get("x-9router-plan-id")) return response;
+
     if (stream) {
       // Transform OpenAI SSE => Gemini SSE on the fly.
       // The @google/genai SDK always uses :streamGenerateContent?alt=sse and
