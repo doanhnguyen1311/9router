@@ -33,9 +33,11 @@
 **Testing:**
 
 - Full Vitest: 1,455/1,455 suites; 4,684 passed; 0 failed; 131 conditional pending; 1 todo.
+- Post-Phase-3 full Vitest: 1,466/1,466 suites; 4,704 passed; 0 failed; 131 conditional pending; 1 todo.
+- Focused connector plus corrected execution handoff compatibility: 13/13 passed.
 - Build/TypeScript PASS; 163/163 static pages generated.
 - ESLint 3,465 files / 0 errors; npm audit 0 vulnerabilities.
-- MCP benchmark: average 0.32 ms, p95 0.58 ms.
+- Latest MCP benchmark: average 0.61 ms, p95 2.91 ms.
 - Real ChatGPT Web E2E: `NOT TESTED` because no authenticated built-in browser/session or reachable staging endpoint was available.
 
 **Security:**

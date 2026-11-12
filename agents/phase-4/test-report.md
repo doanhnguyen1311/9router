@@ -17,3 +17,10 @@ Coverage includes HTTP-style dynamic client registration, pairing, PKCE token ex
 An actual ChatGPT Web connector could not be configured because this environment has no available authenticated built-in browser/ChatGPT session or public HTTPS staging endpoint. Therefore the final external check—ChatGPT Web calls `get_project_overview` and names the intended Project—is `NOT TESTED`.
 
 Per the mandatory gate rules, that external acceptance criterion keeps Phase 4 `BLOCKED` even though all automated evidence passes.
+
+## Post-Phase-3 compatibility rerun
+
+- Authoritative full regression: 1,466/1,466 suites; 4,704 passed; 0 failed; 131 conditional pending; 1 todo.
+- Focused `chatgpt-connector`, MCP benchmark and corrected planning-execution handoff: 3 files / 13 tests passed.
+- OAuth/PKCE, project scoping, current RBAC, secret filtering, prompt-injection labeling, rate limits, revocation, validated/idempotent draft submission and approval isolation remain green.
+- The corrected execution handoff does not expose ticket preparation through MCP. A human must still select/approve before the separate local worker action is available.

@@ -8,3 +8,12 @@ Fifty authenticated stateless MCP `ping` requests against a temporary SQLite-bac
 The benchmark covers local authentication, hashed-token lookup, connector expiry checks, usage timestamps, rate limiting and JSON-RPC response handling. It does not measure internet, reverse-proxy or ChatGPT Web latency.
 
 All Project context tools are bounded by server-side limits. No raw repository upload, long-held HTTP request or server-initiated MCP session is used.
+
+## Post-Phase-3 rerun
+
+The same 50-request local benchmark measured:
+
+- Average: `0.61 ms`
+- p95: `2.91 ms`
+
+Both historical and current measurements are well below the local 500 ms test bound. They do not include internet, reverse-proxy or ChatGPT Web latency.
