@@ -8,7 +8,6 @@ import {
 import {
   approvePlan,
   cancelPlan,
-  getPlan,
   rejectPlan,
   requestApproval,
   revisePlan,
@@ -17,6 +16,7 @@ import {
 } from "@/lib/planning/service.js";
 import { planningError } from "@/lib/planning/constants.js";
 import { consumeProjectApiBudget } from "@/lib/projectMemory/rateLimit.js";
+import { issueExecutionTicket, requestCancellation } from "@/lib/execution/service.js";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +28,10 @@ const ACTION_FIELDS = Object.freeze({
   approve: new Set(["action", "expectedVersion", "optionId", "scope", "idempotencyKey", "reason"]),
   reject: new Set(["action", "expectedVersion", "optionId", "scope", "idempotencyKey", "reason"]),
   cancel: new Set(["action", "expectedVersion", "reason"]),
+  prepare_execution: new Set([
+    "action", "expectedVersion", "workerId", "workspace", "timeoutMs", "expirationMinutes",
+  ]),
+  cancel_execution: new Set(["action", "expectedVersion", "reason"]),
 });
 
 function validateAction(body) {
@@ -52,7 +56,18 @@ function enforceActionRateLimit(keyRecord, request) {
   });
 }
 
-async function applyAction(action, projectId, planId, body, identity, signal) {
+function requireCurrentVersion(plan, value) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw planningError("PLAN_VERSION_REQUIRED", "A positive expectedVersion is required", 400);
+  }
+  if (value !== plan.version) {
+    throw planningError("PLAN_VERSION_CONFLICT", "Plan version is stale", 409, { currentVersion: plan.version });
+  }
+}
+
+async function applyAction(action, plan, body, identity, signal) {
+  const projectId = plan.projectId;
+  const planId = plan.id;
   if (action === "select_option") return selectOption(projectId, planId, body, identity);
   if (action === "submit_feedback") return submitFeedback(projectId, planId, body, identity);
   if (action === "revise") return revisePlan(projectId, planId, body, identity, { signal });
@@ -60,6 +75,14 @@ async function applyAction(action, projectId, planId, body, identity, signal) {
   if (action === "approve") return approvePlan(projectId, planId, body, identity);
   if (action === "reject") return rejectPlan(projectId, planId, body, identity);
   if (action === "cancel") return cancelPlan(projectId, planId, body, identity);
+  if (action === "prepare_execution") {
+    return issueExecutionTicket(projectId, planId, body, identity);
+  }
+  if (action === "cancel_execution") {
+    requireCurrentVersion(plan, body.expectedVersion);
+    if (!plan.execution?.id) throw planningError("EXECUTION_NOT_FOUND", "Execution not found", 404);
+    return requestCancellation(projectId, plan.execution.id, body, identity);
+  }
   throw planningError("PLANNING_ACTION_INVALID", "Unknown planning action", 400);
 }
 
@@ -74,12 +97,20 @@ export async function POST(request, { params }) {
     enforceActionRateLimit(keyRecord, request);
     const body = await readPlanningJson(request);
     const action = validateAction(body);
-    await applyAction(action, plan.projectId, plan.id, body, identity, request.signal);
-    const updated = await getPlan(plan.projectId, plan.id, identity);
-    return planningSessionResponse(updated, keyRecord, 200);
+    const result = await applyAction(action, plan, body, identity, request.signal);
+    const updated = await getPlanningSessionForApiKey(request, planId);
+    const handoff = action === "prepare_execution" ? {
+      executionHandoff: {
+        ticket: result.ticket,
+        expiresAt: result.expiresAt,
+        workerId: result.execution.workerId,
+        executionId: result.execution.id,
+      },
+    } : null;
+    return planningSessionResponse(updated.plan, updated.keyRecord, action === "prepare_execution" ? 201 : 200, handoff);
   } catch (error) {
     return planningOperationErrorResponse(error);
   }
 }
 
-export const __test__ = { ACTION_FIELDS, applyAction, validateAction };
+export const __test__ = { ACTION_FIELDS, applyAction, requireCurrentVersion, validateAction };

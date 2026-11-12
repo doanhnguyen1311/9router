@@ -45,7 +45,11 @@ function audit(db, { planId, projectId, actorId, eventType, fromStatus = null, t
 }
 
 function redactedText(value, maxChars) {
-  return redactProjectText(String(value || "").slice(0, maxChars)).text.slice(0, maxChars);
+  return redactProjectText(String(value || "").slice(0, maxChars)).text
+    .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g, "[REDACTED:private-key]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/gi, "Bearer [REDACTED:bearer-token]")
+    .replace(/\b(api[_-]?key|secret|password|token)\s*[:=]\s*([^\s,]{8,})/gi, "$1=[REDACTED:sensitive-value]")
+    .slice(0, maxChars);
 }
 
 function resultFiles(value) {
@@ -55,9 +59,33 @@ function resultFiles(value) {
   )))].slice(0, 500);
 }
 
+function sanitizeJsonValue(value, key = "", depth = 0) {
+  if (depth > 5) return "[TRUNCATED:depth]";
+  if (/(?:api.?key|secret|password|token|authorization|credential)/i.test(key)) return "[REDACTED:sensitive-field]";
+  if (typeof value === "string") return redactedText(value, 10_000);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 100).map((entry) => sanitizeJsonValue(entry, "", depth + 1));
+  if (!value || typeof value !== "object") return null;
+  return Object.fromEntries(Object.entries(value).slice(0, 100).map(([childKey, childValue]) => [
+    String(childKey).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 200),
+    sanitizeJsonValue(childValue, childKey, depth + 1),
+  ]));
+}
+
 function boundedJson(value, maxChars) {
-  const raw = JSON.stringify(value ?? {});
+  const raw = JSON.stringify(sanitizeJsonValue(value ?? {}));
   return raw.length <= maxChars ? raw : JSON.stringify({ truncated: true });
+}
+
+function numericUsage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "{}";
+  const usage = Object.fromEntries(Object.entries(value).slice(0, 100).flatMap(([key, amount]) => (
+    typeof amount === "number" && Number.isFinite(amount) && amount >= 0
+      ? [[String(key).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 100), amount]]
+      : []
+  )));
+  return JSON.stringify(usage);
 }
 
 export async function issueExecutionTicket({
@@ -196,7 +224,7 @@ export async function completeExecution({ token, workerId, result }) {
     diffSummary: redactedText(result?.diffSummary, 20_000),
     testResults: boundedJson(result?.testResults, 40_000),
     filteredLogs: redactedText(result?.filteredLogs, 120_000),
-    tokenUsage: boundedJson(result?.tokenUsage, 10_000),
+    tokenUsage: numericUsage(result?.tokenUsage),
     errorCode: result?.errorCode == null ? null : redactedText(result.errorCode, 200),
     errorMessage: result?.errorMessage == null ? null : redactedText(result.errorMessage, 2_000),
   };
@@ -311,4 +339,13 @@ export async function getExecution(projectId, executionId, identity) {
   return execution;
 }
 
-export const __test__ = { parseExecution, executionPlan };
+export async function getExecutionForPlan(projectId, planId, identity) {
+  await requireProjectRole(projectId, identity.principalId, ["owner", "editor", "viewer"]);
+  const db = await getAdapter();
+  return parseExecution(db.get(
+    "SELECT * FROM planExecutions WHERE planId=? AND projectId=?",
+    [planId, projectId],
+  ));
+}
+
+export const __test__ = { boundedJson, executionPlan, numericUsage, parseExecution, redactedText, sanitizeJsonValue };

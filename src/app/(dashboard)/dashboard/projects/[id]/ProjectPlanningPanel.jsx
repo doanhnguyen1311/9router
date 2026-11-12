@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Card } from "@/shared/components";
 
-const TERMINAL = new Set(["APPROVED", "REJECTED", "CANCELLED", "FAILED", "EXPIRED", "STALE", "COMPLETED"]);
+const TERMINAL = new Set(["APPROVED", "EXECUTING", "REJECTED", "CANCELLED", "FAILED", "EXPIRED", "STALE", "COMPLETED"]);
 const STATUS_TONES = {
   APPROVED: "bg-green-500/10 text-green-500",
   COMPLETED: "bg-green-500/10 text-green-500",
@@ -90,6 +90,12 @@ export default function ProjectPlanningPanel({ projectId, canEdit, initialPlanId
 
   useEffect(() => { if (selectedId) void loadPlan(selectedId).catch((loadError) => setError(loadError.message)); }, [selectedId, loadPlan]);
 
+  useEffect(() => {
+    if (!plan?.id || !["QUEUED", "EXECUTING"].includes(plan.execution?.status)) return undefined;
+    const timer = window.setInterval(() => void loadPlan(plan.id).catch((loadError) => setError(loadError.message)), 3000);
+    return () => window.clearInterval(timer);
+  }, [plan?.id, plan?.execution?.status, loadPlan]);
+
   async function mutate(action, path, body) {
     setBusy(action); setError("");
     try {
@@ -138,10 +144,26 @@ export default function ProjectPlanningPanel({ projectId, canEdit, initialPlanId
     });
   }
 
+  async function cancelExecution() {
+    if (!plan?.execution?.id || !window.confirm("Cancel this Codex execution?")) return;
+    setBusy("cancel-execution"); setError("");
+    try {
+      await readJson(await fetch(`/api/v1/projects/${projectId}/executions/${plan.execution.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Cancelled from dashboard" }),
+      }));
+      await loadPlans();
+      await loadPlan(plan.id);
+    } catch (cancelError) {
+      setError(cancelError.message);
+    } finally { setBusy(""); }
+  }
+
   if (loading) return <Card><p className="flex items-center gap-2 text-sm text-text-muted"><span className="material-symbols-outlined animate-spin">progress_activity</span>Loading planning workspace…</p></Card>;
 
   return <div className="space-y-4">
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-lg font-semibold text-text-main">Planning workspace</h2><p className="mt-1 text-xs text-text-muted">Planning → explicit approval. Approved plans remain inert until the Phase 3 execution worker is enabled.</p></div>{canEdit && <Button icon="add" onClick={() => setShowCreate((value) => !value)}>New plan</Button>}</div>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-lg font-semibold text-text-main">Planning workspace</h2><p className="mt-1 text-xs text-text-muted">Planning → explicit approval → validated local Codex worker → verified result.</p></div>{canEdit && <Button icon="add" onClick={() => setShowCreate((value) => !value)}>New plan</Button>}</div>
     {error && <div role="alert" className="flex items-start justify-between gap-3 rounded-xl border border-red-500/25 bg-red-500/5 p-3 text-sm text-red-500"><span>{error}</span><button type="button" className="underline" onClick={() => { setError(""); void loadPlans(); if (selectedId) void loadPlan(selectedId); }}>Retry</button></div>}
     {showCreate && canEdit && <Card title="Create planning task" subtitle="The selected provider receives only bounded, redacted Project context" icon="edit_note"><form onSubmit={createPlan} className="space-y-3"><label className="block text-xs font-semibold text-text-main">Request<textarea required rows={5} value={draft.originalRequest} onChange={(event) => setDraft((current) => ({ ...current, originalRequest: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-border bg-surface-2 p-3 text-sm outline-none focus:border-brand-500/60" placeholder="Describe the outcome, constraints, and acceptance criteria." /></label><div className="grid gap-3 sm:grid-cols-2"><label className="text-xs font-semibold text-text-main">Provider ID<input required value={draft.providerId} onChange={(event) => setDraft((current) => ({ ...current, providerId: event.target.value }))} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3" placeholder="Configured provider" /></label><label className="text-xs font-semibold text-text-main">Model ID<input required value={draft.modelId} onChange={(event) => setDraft((current) => ({ ...current, modelId: event.target.value }))} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3" placeholder="Configured model" /></label><label className="text-xs font-semibold text-text-main">Context token budget<input type="number" min="256" max="16000" required value={draft.contextTokenBudget} onChange={(event) => setDraft((current) => ({ ...current, contextTokenBudget: event.target.value }))} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3" /></label><label className="text-xs font-semibold text-text-main">Expires after (minutes)<input type="number" min="5" max="43200" required value={draft.expirationMinutes} onChange={(event) => setDraft((current) => ({ ...current, expirationMinutes: event.target.value }))} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3" /></label></div><div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={() => setShowCreate(false)}>Cancel</Button><Button type="submit" loading={busy === "create"}>Generate options</Button></div></form></Card>}
 
@@ -151,7 +173,8 @@ export default function ProjectPlanningPanel({ projectId, canEdit, initialPlanId
       <div className="min-w-0 space-y-4">{detailLoading ? <Card><p className="text-sm text-text-muted">Loading plan details…</p></Card> : !plan ? <Card className="p-12 text-center"><p className="text-sm text-text-muted">Select a plan to inspect its objective, options, and approval history.</p></Card> : <>
         <Card><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><PlanStatusBadge status={plan.status} /><span className="text-[10px] text-text-muted">Revision {plan.currentRevision} · version {plan.version}</span></div><h2 className="mt-3 text-xl font-semibold text-text-main">{plan.interpretedObjective || "Intent is being interpreted"}</h2><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-text-muted">{plan.originalRequest}</p></div><div className="text-right text-[10px] text-text-muted"><p>{plan.providerId} / {plan.modelId}</p><p className="mt-1">Expires {date(plan.expiresAt)}</p></div></div><div className="mt-5 grid gap-4 border-t border-border pt-4 md:grid-cols-2"><TextList title="Assumptions" values={plan.assumptions} /><TextList title="Missing information" values={plan.missingInformation} /><TextList title="Constraints" values={plan.constraints} /><TextList title="Affected modules" values={plan.affectedModules} /><TextList title="Risks" values={plan.risks} /></div></Card>
 
-        {plan.status === "APPROVED" && <div role="status" className="rounded-xl border border-green-500/25 bg-green-500/5 p-4 text-sm text-green-600"><p className="font-semibold">Approved and locked</p><p className="mt-1 text-xs">No execution has started. Phase 3 will issue a scoped execution ticket after workspace validation.</p></div>}
+        {plan.status === "APPROVED" && !plan.execution && <div role="status" className="rounded-xl border border-green-500/25 bg-green-500/5 p-4 text-sm text-green-600"><p className="font-semibold">Approved and ready for the local worker</p><p className="mt-1 text-xs">Run the command below on the machine that owns the Git workspace. API Key and worker secret must be supplied through environment variables.</p><code className="mt-3 block overflow-x-auto rounded-lg bg-surface-2 p-3 text-[11px] text-text-main">9router execute-plan --server &lt;9router-url&gt; --plan {plan.id} --workspace &lt;absolute-path&gt;</code></div>}
+        {plan.execution && <Card title="Codex execution" subtitle={`Worker ${plan.execution.workerId}`} icon="terminal"><div className="space-y-3 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><PlanStatusBadge status={plan.execution.status} /><div className="flex items-center gap-2"><span className="text-text-muted">{plan.execution.durationMs ? `${plan.execution.durationMs} ms` : "Waiting for verified result"}</span>{canEdit && ["QUEUED", "EXECUTING"].includes(plan.execution.status) && !plan.execution.cancelRequestedAt && <Button size="xs" variant="danger" loading={busy === "cancel-execution"} disabled={Boolean(busy)} onClick={() => void cancelExecution()}>Cancel execution</Button>}</div></div>{plan.execution.cancelRequestedAt && <p className="text-amber-600">Cancellation requested; the worker will stop at its next heartbeat.</p>}{plan.execution.modifiedFiles?.length > 0 && <TextList title="Modified files" values={plan.execution.modifiedFiles} />}{plan.execution.diffSummary && <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-surface-2 p-3 font-mono text-[10px] text-text-main">{plan.execution.diffSummary}</pre>}{plan.execution.errorMessage && <p role="alert" className="rounded-lg bg-red-500/5 p-3 text-red-500">{plan.execution.errorCode ? `${plan.execution.errorCode}: ` : ""}{plan.execution.errorMessage}</p>}{plan.execution.filteredLogs && <details><summary className="cursor-pointer font-semibold text-text-main">Filtered worker logs</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-surface-2 p-3 font-mono text-[10px] text-text-muted">{plan.execution.filteredLogs}</pre></details>}</div></Card>}
         {plan.status === "EXPIRED" && <div role="status" className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4 text-sm text-amber-600">This plan expired. Create or revise a current plan before approval.</div>}
 
         <section aria-labelledby="plan-options-heading" className="space-y-3"><div className="flex items-center justify-between"><h2 id="plan-options-heading" className="font-semibold text-text-main">Options</h2><span className="text-xs text-text-muted">{plan.options?.length || 0} available</span></div>{!plan.options?.length ? <Card><p className="text-sm text-text-muted">No options are available. Answer the missing questions through a revision.</p></Card> : plan.options.map((option) => <PlanOptionCard key={option.id} option={option} selected={option.id === plan.selectedOptionId} disabled={!canEdit || busy !== "" || TERMINAL.has(plan.status)} onSelect={(optionId) => void mutate("select", "select-option", { optionId, expectedVersion: plan.version })} />)}</section>

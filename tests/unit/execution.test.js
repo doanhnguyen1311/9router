@@ -45,10 +45,11 @@ async function boot() {
   const execution = await import("@/lib/execution/service.js");
   const workspace = await import("@/lib/execution/workspace.js");
   const codexCli = await import("@/lib/execution/codexCli.js");
+  const ticket = await import("@/lib/execution/ticket.js");
   const auth = await import("@/lib/execution/auth.js");
   const database = await import("@/lib/db/index.js");
   const { getAdapter } = await import("@/lib/db/driver.js");
-  return { projects, planning, execution, workspace, codexCli, auth, database, adapter: await getAdapter() };
+  return { projects, planning, execution, workspace, codexCli, ticket, auth, database, adapter: await getAdapter() };
 }
 
 function createGitWorkspace() {
@@ -104,13 +105,13 @@ describe("Codex CLI contract", () => {
     const { codexCli } = await boot();
     const root = createGitWorkspace();
     const calls = [];
-    const fakeExecFile = vi.fn(async (_command, args) => {
-      calls.push(args);
-      return { stdout: args[0] === "--version" ? "codex-cli 0.165.0" : "--sandbox\n--output-last-message\n--json\n-C, --cd" };
+    const fakeExecFile = vi.fn(async (_command, args, options) => {
+      calls.push({ args, options });
+      return { stdout: args[0] === "--version" ? "codex-cli 0.165.0" : "--sandbox\n--output-last-message\n--json\n-C, --cd\n--ephemeral\n--ignore-user-config\n--ignore-rules\n--strict-config" };
     });
     const spawnCalls = [];
-    const fakeSpawn = vi.fn((_command, args) => {
-      spawnCalls.push(args);
+    const fakeSpawn = vi.fn((_command, args, options) => {
+      spawnCalls.push({ args, options });
       const child = new EventEmitter();
       child.stdin = { end: vi.fn() };
       child.stdout = new EventEmitter();
@@ -119,13 +120,38 @@ describe("Codex CLI contract", () => {
       queueMicrotask(() => child.emit("close", 0, null));
       return child;
     });
-    const executor = new codexCli.CodexCliExecutor({ execFile: fakeExecFile, spawn: fakeSpawn, fsImpl: fsPromises });
+    const executor = new codexCli.CodexCliExecutor({
+      execFile: fakeExecFile,
+      spawn: fakeSpawn,
+      fsImpl: fsPromises,
+      environment: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        NINEROUTER_API_KEY: "must-not-reach-codex",
+        EXECUTION_WORKER_SECRET: "must-not-reach-codex",
+        OPENAI_API_KEY: "must-not-reach-codex",
+      },
+    });
     const result = await executor.run({ plan: { ...output, options: [{ ...output.options[0], id: "option-1" }], selectedOptionId: "option-1" }, workspaceRoot: root, timeoutMs: 10_000 });
     expect(result.exitStatus).toBe(0);
-    expect(spawnCalls[0]).toEqual(expect.arrayContaining(["exec", "--sandbox", "workspace-write", "--json", "--output-last-message", "-"]));
-    expect(spawnCalls[0]).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-    expect(spawnCalls[0]).not.toContain("--dangerously-bypass-hook-trust");
-    expect(calls[0]).toEqual(["--version"]);
+    expect(result.testResults).toMatchObject({ source: "codex-final-report" });
+    expect(spawnCalls[0].args).toEqual(expect.arrayContaining([
+      "exec", "--sandbox", "workspace-write", "--ephemeral", "--ignore-user-config",
+      "--ignore-rules", "--strict-config", "--json", "--output-last-message", "-",
+    ]));
+    expect(spawnCalls[0].args).toEqual(expect.arrayContaining([
+      "-c", 'approval_policy="never"', 'shell_environment_policy.inherit="none"',
+    ]));
+    expect(spawnCalls[0].args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(spawnCalls[0].args).not.toContain("--dangerously-bypass-hook-trust");
+    expect(spawnCalls[0].options.env).toMatchObject({ PATH: process.env.PATH, HOME: process.env.HOME });
+    expect(spawnCalls[0].options.env).not.toHaveProperty("NINEROUTER_API_KEY");
+    expect(spawnCalls[0].options.env).not.toHaveProperty("EXECUTION_WORKER_SECRET");
+    expect(spawnCalls[0].options.env).not.toHaveProperty("OPENAI_API_KEY");
+    expect(calls[0].args).toEqual(["--version"]);
+    expect(calls[0].options.env).not.toHaveProperty("NINEROUTER_API_KEY");
+    expect(calls[0].options.env).not.toHaveProperty("EXECUTION_WORKER_SECRET");
+    expect(calls[0].options.env).not.toHaveProperty("OPENAI_API_KEY");
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -133,7 +159,10 @@ describe("Codex CLI contract", () => {
     const { codexCli } = await boot();
     const contract = await codexCli.inspectCodexCli({ command: process.env.CODEX_BIN || "codex" });
     expect(contract.version).toMatch(/codex/i);
-    expect(contract.requiredFlags).toEqual(expect.arrayContaining(["--sandbox", "--output-last-message", "--json", "-C, --cd"]));
+    expect(contract.requiredFlags).toEqual(expect.arrayContaining([
+      "--sandbox", "--output-last-message", "--json", "-C, --cd",
+      "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config",
+    ]));
   });
 });
 
@@ -154,6 +183,35 @@ describe("Execution worker authentication", () => {
   });
 });
 
+describe("Execution ticket integrity", () => {
+  it("rejects tampered, expired, and wrong-worker tickets", async () => {
+    const { projects, planning, execution, workspace, ticket } = await boot();
+    const signed = await ticket.signExecutionTicket({
+      ticketId: "ticket-integrity", executionId: "execution-integrity", planId: "plan-integrity",
+      projectId: "project-integrity", workerId: "worker-integrity", exp: Date.now() + 60000,
+    });
+    expect(await ticket.verifyExecutionTicket(signed)).toMatchObject({ workerId: "worker-integrity" });
+    const [body, signature] = signed.split(".");
+    const tampered = `${body}.${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}`;
+    await expect(ticket.verifyExecutionTicket(tampered)).rejects.toMatchObject({ code: "EXECUTION_TICKET_INVALID", status: 401 });
+    const expired = await ticket.signExecutionTicket({
+      ticketId: "ticket-expired", executionId: "execution-expired", planId: "plan-expired",
+      projectId: "project-expired", workerId: "worker-expired", exp: Date.now() - 1,
+    });
+    await expect(ticket.verifyExecutionTicket(expired)).rejects.toMatchObject({ code: "EXECUTION_TICKET_EXPIRED", status: 401 });
+
+    const { project, plan } = await approvedPlan(planning, projects, "Execution worker binding");
+    const root = createGitWorkspace();
+    const issued = await execution.issueExecutionTicket(project.id, plan.id, {
+      expectedVersion: plan.version, workerId: "bound-worker", workspace: { root },
+    }, owner);
+    await expect(execution.claimExecutionTicket(issued.ticket, "wrong-worker", {
+      validateWorkspace: (descriptor) => workspace.validateWorkspace(descriptor, { allowedRoots: [root] }),
+    })).rejects.toMatchObject({ code: "EXECUTION_TICKET_WORKER_MISMATCH", status: 403 });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
 describe("Execution ticket and worker state machine", () => {
   it("issues a scoped ticket, validates workspace, prevents duplicates, completes and records verified memory", async () => {
     const { projects, planning, execution, workspace, database, adapter } = await boot();
@@ -170,6 +228,9 @@ describe("Execution ticket and worker state machine", () => {
     }, owner);
     expect(ticket.ticket).not.toContain("worker-local-1");
     expect(ticket.execution).toMatchObject({ status: "QUEUED", workerId: "worker-local-1", approvedPlanVersion: plan.version });
+    expect(ticket.execution).not.toHaveProperty("sourceRevision");
+    expect(ticket.execution).not.toHaveProperty("ticketHash");
+    expect(ticket.execution).not.toHaveProperty("ticketId");
     await expect(execution.issueExecutionTicket(project.id, plan.id, {
       expectedVersion: plan.version, workerId: "worker-local-1", workspace: { root, branch, commitSha, fileHashes: hashes },
     }, owner)).rejects.toMatchObject({ code: "EXECUTION_DUPLICATE", status: 409 });
@@ -182,12 +243,25 @@ describe("Execution ticket and worker state machine", () => {
       modifiedFiles: ["src/example.js", "../outside.js"],
       diffSummary: "1 file changed",
       filteredLogs: "safe sk-abcdefghijklmnopqrst",
-      tokenUsage: { total: 12 },
+      testResults: {
+        passed: 1,
+        password: "super-sensitive-password",
+        output: "Bearer abcdefghijklmnopqrstuvwxyz123456",
+      },
+      tokenUsage: { total: 12, secret: "must-not-be-stored" },
       durationMs: 50,
     });
     expect(completed).toMatchObject({ status: "COMPLETED", modifiedFiles: ["src/example.js"] });
     expect(completed.filteredLogs).toContain("[REDACTED:api-token]");
     expect(completed.filteredLogs).not.toContain("sk-abcdefghijklmnopqrst");
+    expect(completed.testResults).toMatchObject({
+      passed: 1,
+      password: "[REDACTED:sensitive-field]",
+      output: "Bearer [REDACTED:bearer-token]",
+    });
+    expect(completed.tokenUsage).toEqual({ total: 12 });
+    expect(await execution.readExecution(project.id, ticket.execution.id, owner)).not.toHaveProperty("sourceRevision");
+    expect((await execution.listExecutions(project.id, owner))[0]).not.toHaveProperty("ticketHash");
     expect(adapter.get("SELECT status FROM executionPlans WHERE id=?", [plan.id]).status).toBe("COMPLETED");
     expect(adapter.get("SELECT COUNT(*) AS count FROM memoryItems WHERE projectId=? AND sourceType='tool-verified'", [project.id]).count).toBe(1);
     const backup = await database.exportDb();
@@ -290,5 +364,27 @@ describe("Execution ticket and worker state machine", () => {
     await expect(workspace.validateWorkspace({ root }, { allowedRoots: [] })).rejects.toMatchObject({ code: "WORKSPACE_POLICY_UNAVAILABLE", status: 503 });
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(otherRoot, { recursive: true, force: true });
+  });
+
+  it("fails closed for secret files and unsafe symlinks before Codex starts", async () => {
+    const { workspace } = await boot();
+    const root = createGitWorkspace();
+    fs.writeFileSync(path.join(root, ".env.example"), "API_KEY=replace-me\n");
+    await expect(workspace.validateWorkspace({ root }, { allowedRoots: [root] })).resolves.toMatchObject({ stale: false });
+
+    fs.writeFileSync(path.join(root, ".env"), "API_KEY=real-secret\n");
+    await expect(workspace.validateWorkspace({ root }, { allowedRoots: [root] })).rejects.toMatchObject({
+      code: "WORKSPACE_SECRET_FILE", status: 409,
+    });
+    fs.rmSync(path.join(root, ".env"));
+
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "9router-outside-symlink-"));
+    fs.writeFileSync(path.join(outside, "outside.txt"), "outside\n");
+    fs.symlinkSync(path.join(outside, "outside.txt"), path.join(root, "src/escape.txt"));
+    await expect(workspace.validateWorkspace({ root }, { allowedRoots: [root] })).rejects.toMatchObject({
+      code: "WORKSPACE_SYMLINK_UNSAFE", status: 409,
+    });
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
   });
 });

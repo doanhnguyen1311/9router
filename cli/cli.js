@@ -77,6 +77,29 @@ const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRunt
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
 const args = process.argv.slice(2);
 
+if (args[0] === "execute-plan") {
+  const command = require("./src/cli/commands/executePlan");
+  const controller = new AbortController();
+  const stop = () => controller.abort(new Error("Execution interrupted"));
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  command.run(args.slice(1), { signal: controller.signal })
+    .then((result) => {
+      if (result.help) console.log(result.help);
+      else if (result.execution) console.log(`✅ Execution ${result.execution.id}: ${result.execution.status}`);
+      process.exitCode = result.code;
+    })
+    .catch((error) => {
+      console.error(`❌ ${error?.code ? `${error.code}: ` : ""}${error?.message || error}`);
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      process.removeListener("SIGINT", stop);
+      process.removeListener("SIGTERM", stop);
+    });
+  return;
+}
+
 // Subcommands (`9router xai video …`) run against an already-running gateway
 // and bypass the launcher flow (no runtime self-heal, no server spawn).
 if (args[0] === "xai" && args[1] === "video") {
@@ -186,6 +209,8 @@ Commands:
                       (npx 9router connect http://host:20128 — no install needed)
   show [tool…]        Show each CLI tool's current 9router config and models
                       (e.g. 9router show claude)
+  execute-plan --server <url> --plan <id> --workspace <path>
+                      Execute an approved Plan with the local Codex CLI
   xai video --prompt "..." --output video.mp4
                       Generate a Grok Imagine video via the running gateway
                       (see: ${APP_NAME} xai video --help)

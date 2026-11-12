@@ -128,14 +128,48 @@ export function shouldCreateAutomaticPlan(request, body, keyRecord) {
   return { create: true, originalRequest: extracted.text };
 }
 
-function actionNames(status, selectedOptionId) {
+function parseExecutionJson(value, fallback) {
+  try { return value ? JSON.parse(value) : fallback; }
+  catch { return fallback; }
+}
+
+function executionSummary(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    status: row.status,
+    workerId: row.workerId,
+    approvedRevision: row.approvedRevision,
+    approvedPlanVersion: row.approvedPlanVersion,
+    cancelRequestedAt: row.cancelRequestedAt,
+    exitStatus: row.exitStatus,
+    modifiedFiles: parseExecutionJson(row.modifiedFiles, []),
+    diffSummary: row.diffSummary || "",
+    testResults: parseExecutionJson(row.testResults, {}),
+    filteredLogs: row.filteredLogs || "",
+    tokenUsage: parseExecutionJson(row.tokenUsage, {}),
+    errorCode: row.errorCode,
+    errorMessage: row.errorMessage,
+    durationMs: row.durationMs,
+    startedAt: row.startedAt,
+    completedAt: row.completedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function actionNames(plan) {
+  const { status, selectedOptionId, execution } = plan;
   if (status === "DRAFT") return ["poll"];
   if (status === "NEEDS_CLARIFICATION") return ["submit_feedback", "revise", "cancel"];
   if (status === "OPTIONS_READY") return selectedOptionId
     ? ["select_option", "submit_feedback", "revise", "request_approval", "cancel"]
     : ["select_option", "submit_feedback", "revise", "cancel"];
   if (status === "PENDING_APPROVAL") return ["select_option", "submit_feedback", "approve", "reject", "revise", "cancel"];
-  if (status === "APPROVED" || status === "EXECUTING") return ["poll"];
+  if (status === "APPROVED") return execution?.status === "QUEUED"
+    ? ["poll", "cancel_execution"]
+    : ["prepare_execution"];
+  if (status === "EXECUTING") return ["poll", "cancel_execution"];
   return [];
 }
 
@@ -164,7 +198,8 @@ export function serializePlanningSession(plan, keyRecord) {
     // false values are treated as true until an independently authorized
     // non-human approval policy exists.
     approvalRequired: true,
-    availableActions: actionNames(plan.status, plan.selectedOptionId),
+    availableActions: actionNames(plan),
+    execution: plan.execution || null,
     provider: { id: plan.providerId, model: plan.modelId },
     expiresAt: plan.expiresAt,
     createdAt: plan.createdAt,
@@ -189,8 +224,11 @@ export function planningCorsOptionsResponse() {
   });
 }
 
-export function planningSessionResponse(plan, keyRecord, status = 202) {
-  const session = serializePlanningSession(plan, keyRecord);
+export function planningSessionResponse(plan, keyRecord, status = 202, extra = null) {
+  const session = {
+    ...serializePlanningSession(plan, keyRecord),
+    ...(extra && typeof extra === "object" ? extra : {}),
+  };
   return new Response(JSON.stringify(session), {
     status,
     headers: {
@@ -281,7 +319,14 @@ export async function getPlanningSessionForApiKey(request, planId) {
   );
   if (!owned) throw planningError("PLAN_NOT_FOUND", "Plan not found", 404);
   const plan = await getPlan(keyRecord.assignedProjectId, planId, planningIdentity(keyRecord));
+  plan.execution = executionSummary(db.get(
+    `SELECT id, status, workerId, approvedRevision, approvedPlanVersion, cancelRequestedAt,
+            exitStatus, modifiedFiles, diffSummary, testResults, filteredLogs, tokenUsage,
+            errorCode, errorMessage, durationMs, startedAt, completedAt, createdAt, updatedAt
+     FROM planExecutions WHERE planId=? AND projectId=?`,
+    [planId, keyRecord.assignedProjectId],
+  ));
   return { plan, keyRecord, identity: planningIdentity(keyRecord) };
 }
 
-export const __test__ = { contentText, hashBoundValue, idempotencyValue, latestRoleText };
+export const __test__ = { actionNames, contentText, executionSummary, hashBoundValue, idempotencyValue, latestRoleText };

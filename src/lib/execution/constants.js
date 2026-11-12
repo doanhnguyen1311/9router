@@ -4,6 +4,8 @@ export const EXECUTION_LIMITS = Object.freeze({
   workspaceRootChars: 2_000,
   maxFiles: 500,
   maxFilePathChars: 1_000,
+  maxUntrackedSnapshotBytes: 32 * 1024 * 1024,
+  maxWorkspaceScanEntries: 50_000,
   maxLogsChars: 120_000,
   maxErrorChars: 2_000,
   leaseMs: 60_000,
@@ -15,6 +17,21 @@ export const EXECUTION_LIMITS = Object.freeze({
   ticketExpirationMax: 60,
   defaultTicketExpirationMin: 15,
 });
+
+export const EXECUTION_CHILD_ENV_ALLOWLIST = Object.freeze([
+  "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+  "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+  "SHELL", "SystemRoot", "ComSpec", "PATHEXT", "CODEX_HOME",
+  "TERM", "COLORTERM", "NO_COLOR", "SSL_CERT_FILE", "SSL_CERT_DIR",
+]);
+
+export function safeExecutionEnvironment(source = process.env) {
+  return Object.fromEntries(EXECUTION_CHILD_ENV_ALLOWLIST.flatMap((name) => {
+    const value = source?.[name];
+    return typeof value === "string" && value ? [[name, value]] : [];
+  }));
+}
 
 export function executionError(code, message, status = 400, details = undefined) {
   const error = new Error(message);

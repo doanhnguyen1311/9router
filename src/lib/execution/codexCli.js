@@ -5,20 +5,34 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { redactProjectText } from "@/lib/projectMemory/privacy.js";
-import { EXECUTION_LIMITS, boundedTimeout, executionError } from "./constants.js";
+import {
+  EXECUTION_CHILD_ENV_ALLOWLIST,
+  EXECUTION_LIMITS,
+  boundedTimeout,
+  executionError,
+  safeExecutionEnvironment,
+} from "./constants.js";
 
 const defaultExecFile = promisify(nodeExecFile);
+
+export function safeCodexEnvironment(source = process.env) {
+  return safeExecutionEnvironment(source);
+}
 
 function safeText(value, max = EXECUTION_LIMITS.maxLogsChars) {
   return redactProjectText(String(value || "").slice(-max)).text.slice(-max);
 }
 
-export async function inspectCodexCli({ command = "codex", execFile = defaultExecFile } = {}) {
+export async function inspectCodexCli({ command = "codex", execFile = defaultExecFile, environment = process.env } = {}) {
   try {
-    const version = await execFile(command, ["--version"], { encoding: "utf8", maxBuffer: 64 * 1024 });
-    const help = await execFile(command, ["exec", "--help"], { encoding: "utf8", maxBuffer: 256 * 1024 });
+    const safeEnvironment = safeCodexEnvironment(environment);
+    const version = await execFile(command, ["--version"], { encoding: "utf8", maxBuffer: 64 * 1024, env: safeEnvironment });
+    const help = await execFile(command, ["exec", "--help"], { encoding: "utf8", maxBuffer: 256 * 1024, env: safeEnvironment });
     const helpText = String(help.stdout || "");
-    const requiredFlags = ["--sandbox", "--output-last-message", "--json", "-C, --cd"];
+    const requiredFlags = [
+      "--sandbox", "--output-last-message", "--json", "-C, --cd",
+      "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config",
+    ];
     const missingFlags = requiredFlags.filter((flag) => !helpText.includes(flag));
     if (missingFlags.length) throw executionError("CODEX_CLI_UNSUPPORTED", `Codex CLI is missing required flags: ${missingFlags.join(", ")}`, 503);
     return { command, version: String(version.stdout || "").trim().slice(0, 200), requiredFlags };
@@ -50,16 +64,17 @@ function promptForPlan(plan, workspaceRoot) {
 }
 
 export class CodexCliExecutor {
-  constructor({ command = "codex", spawn = nodeSpawn, execFile = defaultExecFile, fsImpl = fs, tempDir = os.tmpdir } = {}) {
+  constructor({ command = "codex", spawn = nodeSpawn, execFile = defaultExecFile, fsImpl = fs, tempDir = os.tmpdir, environment = process.env } = {}) {
     this.command = command;
     this.spawn = spawn;
     this.execFile = execFile;
     this.fs = fsImpl;
     this.tempDir = tempDir;
+    this.environment = environment;
   }
 
   inspect() {
-    return inspectCodexCli({ command: this.command, execFile: this.execFile });
+    return inspectCodexCli({ command: this.command, execFile: this.execFile, environment: this.environment });
   }
 
   async run({ plan, workspaceRoot, timeoutMs = EXECUTION_LIMITS.defaultTimeoutMs, signal = null }) {
@@ -71,11 +86,21 @@ export class CodexCliExecutor {
       const args = [
         "exec", "-C", workspaceRoot,
         "--sandbox", "workspace-write",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--strict-config",
+        "-c", 'approval_policy="never"',
+        "-c", 'shell_environment_policy.inherit="none"',
         "--json",
         "--output-last-message", outputFile,
         "-",
       ];
-      const child = this.spawn(this.command, args, { cwd: workspaceRoot, stdio: ["pipe", "pipe", "pipe"] });
+      const child = this.spawn(this.command, args, {
+        cwd: workspaceRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: safeCodexEnvironment(this.environment),
+      });
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -110,6 +135,7 @@ export class CodexCliExecutor {
         exitStatus: Number.isInteger(exit.code) ? exit.code : 1,
         signal: exit.signal || null,
         lastMessage: safeText(lastMessage, 40_000),
+        testResults: { source: "codex-final-report", summary: safeText(lastMessage, 40_000) },
         filteredLogs,
         durationMs: Date.now() - startedAt,
         tokenUsage: parseUsage(stdout),
@@ -133,4 +159,4 @@ function parseUsage(output) {
   return usage;
 }
 
-export const __test__ = { promptForPlan, parseUsage, safeText };
+export const __test__ = { CODEX_ENV_ALLOWLIST: EXECUTION_CHILD_ENV_ALLOWLIST, promptForPlan, parseUsage, safeText };
