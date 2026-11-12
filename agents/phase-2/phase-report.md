@@ -47,7 +47,7 @@
 - Critical/High findings: `0 / 0`.
 - Viewer approval, cross-origin mutation, stale version, invalid option/scope, replay and concurrent approval negatives are covered.
 
-**Git Checkpoint:** implementation `1288ca7b` (`feat: add phase 2 planning approval dashboard`); documentation `604c039a` (`docs: record phase 2 quality gate`). `AGENTS.md` remains untracked and excluded.
+**Git Checkpoint:** implementation `1288ca7b` (`feat: add phase 2 planning approval dashboard`); documentation lineage starts at `9dfa2cca` (`docs: record phase 2 quality gate`). `AGENTS.md` remains untracked and excluded.
 
 **Rollback:** additive schema is safe with Planning OFF; use the automatic schema 15→16 backup for reviewed recovery only.
 
