@@ -207,8 +207,13 @@ function parseDecisionText(payload) {
 }
 
 async function askExecutionModelForPlanningDecision({ body, request, userText }) {
-  const model = typeof body?.model === "string" ? body.model.trim() : "";
-  if (!model.includes("/")) return null;
+  let model = typeof body?.model === "string" ? body.model.trim() : "";
+  if (!model.includes("/")) {
+    const { getModelInfo } = await import("@/sse/services/model.js");
+    const resolved = await getModelInfo(model);
+    if (!resolved?.provider || !resolved?.model) return null;
+    model = `${resolved.provider}/${resolved.model}`;
+  }
   const { handleSingleModelChat } = await import("@/sse/handlers/chat.js");
   const decisionBody = {
     model,

@@ -5,10 +5,12 @@ import Link from "next/link";
 import { Button, Card } from "@/shared/components";
 import ProjectGraph from "./ProjectGraph.js";
 import ProjectPlanningPanel from "./ProjectPlanningPanel.jsx";
+import ProjectChatGPTConnectorPanel from "./ProjectChatGPTConnectorPanel.jsx";
 
 const TABS = [
   ["overview", "Overview", "dashboard"], ["graph", "Knowledge Graph", "hub"],
   ["planning", "Planning", "edit_note"],
+  ["chatgpt", "ChatGPT", "auto_awesome"],
   ["memories", "Memories", "memory"], ["files", "Files & Knowledge", "folder_open"],
   ["sessions", "Sessions", "forum"], ["api-keys", "API Keys", "key"],
   ["analytics", "Analytics", "monitoring"], ["settings", "Settings", "settings"],
@@ -186,6 +188,8 @@ export default function ProjectDetailClient({ projectId }) {
     {activeTab === "graph" && <div className="space-y-4">{canEdit && <div className="flex justify-end"><Button variant="danger" size="sm" icon="delete_sweep" loading={deletingAll === "graph"} disabled={Boolean(deletingAll)} onClick={() => void deleteAll("graph", "knowledge graph data")}>Delete all</Button></div>}<ProjectGraph graph={data.graph} loading={tabLoading} onSearch={(options) => void loadTab("graph", options)} /></div>}
 
     {activeTab === "planning" && <ProjectPlanningPanel projectId={projectId} canEdit={canEdit} initialPlanId={planningPlanId} />}
+
+    {activeTab === "chatgpt" && <ProjectChatGPTConnectorPanel projectId={projectId} canEdit={canEdit} />}
 
     {activeTab === "memories" && <div className="space-y-4"><div className="flex flex-col gap-3 sm:flex-row"><div className="relative flex-1"><span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[17px] text-text-muted">search</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search subjects and values" className="h-10 w-full rounded-[10px] border border-border bg-surface pl-10 pr-3 text-sm outline-none focus:border-brand-500/60" /></div><Button icon="add" onClick={() => setShowMemoryForm(true)}>Add memory</Button>{canEdit && <Button variant="danger" icon="delete_sweep" loading={deletingAll === "memories"} disabled={Boolean(deletingAll)} onClick={() => void deleteAll("memories", "memories")}>Delete all</Button>}</div>
       {showMemoryForm && <Card><form onSubmit={createMemory} className="grid gap-3 lg:grid-cols-[180px_1fr_1fr_auto]"><select value={memoryDraft.memoryType} onChange={(event) => setMemoryDraft((current) => ({ ...current, memoryType: event.target.value }))} className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-xs">{["project","architecture","entity","relationship","decision","task","constraint","technical_fact","file","dependency","issue","resolution"].map((type) => <option key={type}>{type}</option>)}</select><input required placeholder="Subject" value={memoryDraft.subject} onChange={(event) => setMemoryDraft((current) => ({ ...current, subject: event.target.value }))} className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm" /><input required placeholder="Structured fact or decision" value={memoryDraft.value} onChange={(event) => setMemoryDraft((current) => ({ ...current, value: event.target.value }))} className="h-10 rounded-lg border border-border bg-surface-2 px-3 text-sm" /><div className="flex gap-2"><Button type="submit" size="sm">Save</Button><Button type="button" size="sm" variant="secondary" onClick={() => setShowMemoryForm(false)}>Cancel</Button></div><label className="col-span-full flex items-center gap-2 text-xs text-text-muted"><input type="checkbox" checked={memoryDraft.pinned} onChange={(event) => setMemoryDraft((current) => ({ ...current, pinned: event.target.checked }))} />Pin this memory</label></form></Card>}
