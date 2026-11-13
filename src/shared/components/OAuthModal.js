@@ -362,7 +362,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Authorization code flow - build redirect URI (some providers require fixed ports)
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       let redirectUri;
-      if (provider === "codex") {
+      if (provider === "codex" || provider === "chatgpt-planning") {
         redirectUri = "http://localhost:1455/auth/callback";
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
@@ -383,9 +383,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
       let codexProxyActive = false;
       let codexServerSide = false;
-      if (provider === "codex") {
+      if (provider === "codex" || provider === "chatgpt-planning") {
         try {
-          const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
+          const proxyUrl = new URL(`/api/oauth/${provider}/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
           proxyUrl.searchParams.set("state", data.state);
           proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
@@ -426,9 +426,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       // Take ownership of server-side proxies so close stops them exactly once
       // (replaces the per-provider stop branches; same behavior, one ledger).
-      if ((provider === "codex" && codexProxyActive) || (provider === "xai" && xaiProxyActive)) {
+      if (((provider === "codex" || provider === "chatgpt-planning") && codexProxyActive) || (provider === "xai" && xaiProxyActive)) {
         flowRef.current.proxyStarted = true;
-        flowRef.current.proxyProvider = provider;
+        flowRef.current.proxyProvider = provider === "chatgpt-planning" ? "codex" : provider;
         flowRef.current.stopSent = false;
       }
 
@@ -443,7 +443,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         throw new Error("No authorization URL returned from OAuth provider");
       }
 
-      if (provider === "codex" && codexProxyActive) {
+      if ((provider === "codex" || provider === "chatgpt-planning") && codexProxyActive) {
         // Proxy active: callback will be handled server-side (auto-exchange) or via channels (fallback)
         setStep("waiting");
         popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
@@ -456,7 +456,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         if (!popupRef.current) {
           setStep("input");
         }
-      } else if (!isLocalhost || provider === "codex" || provider === "xai") {
+      } else if (!isLocalhost || provider === "codex" || provider === "chatgpt-planning" || provider === "xai") {
         // Non-localhost or proxy failed: manual input mode
         setStep("input");
         window.open(data.authUrl, "_blank");

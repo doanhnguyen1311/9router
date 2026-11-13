@@ -159,7 +159,7 @@ export async function GET(request, { params }) {
         const result = await startXiaomiMimoProxy();
         return NextResponse.json(result);
       }
-      if (!["codex", "xai"].includes(provider)) {
+      if (!["codex", "chatgpt-planning", "xai"].includes(provider)) {
         return NextResponse.json({ error: "Proxy only supported for codex/xai/trae/windsurf/zed" }, { status: 400 });
       }
       const appPort = searchParams.get("app_port");
@@ -176,7 +176,7 @@ export async function GET(request, { params }) {
       if (result.success && state && codeVerifier && redirectUri) {
         serverSide = provider === "xai"
           ? registerXaiSession({ state, codeVerifier, redirectUri })
-          : registerCodexSession({ state, codeVerifier, redirectUri });
+          : registerCodexSession({ state, codeVerifier, redirectUri, provider });
       }
       return NextResponse.json({ ...result, serverSide });
     }
@@ -191,7 +191,7 @@ export async function GET(request, { params }) {
       else if (provider === "windsurf") session = getWindsurfSessionStatus(state);
       else if (provider === "zed") session = getZedSessionStatus(state);
       else if (provider === "xai") session = getXaiSessionStatus(state);
-      else if (provider === "codex") session = getCodexSessionStatus(state);
+      else if (provider === "codex" || provider === "chatgpt-planning") session = getCodexSessionStatus(state);
       else if (provider === "xiaomi-mimo") session = getXiaomiMimoSessionStatus(state);
       else return NextResponse.json({ error: "Poll only supported for codex/xai/trae/windsurf/zed/xiaomi-mimo" }, { status: 400 });
       if (!session) return NextResponse.json({ status: "unknown" });
@@ -222,7 +222,7 @@ export async function GET(request, { params }) {
       else if (provider === "windsurf") stopWindsurfProxy();
       else if (provider === "zed") stopZedProxy();
       else if (provider === "xai") stopXaiProxy();
-      else if (provider === "codex") stopCodexProxy();
+      else if (provider === "codex" || provider === "chatgpt-planning") stopCodexProxy();
       else if (provider === "xiaomi-mimo") stopXiaomiMimoProxy();
       else return NextResponse.json({ error: "Proxy only supported for codex/xai/trae/windsurf/zed/xiaomi-mimo" }, { status: 400 });
       return NextResponse.json({ success: true });
