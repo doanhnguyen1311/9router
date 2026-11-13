@@ -112,6 +112,20 @@ function planningIdentity(keyRecord) {
   };
 }
 
+function debugPlanningDecision(request, keyRecord, extracted, decision) {
+  if (process.env.DEBUG_TRAE_REQUESTS !== "1") return;
+  console.info("[PLANNING_DEBUG]", JSON.stringify({
+    mode: keyRecord?.planning?.planningMode || "OFF",
+    enabled: keyRecord?.planning?.planningEnabled === true,
+    provider: keyRecord?.planning?.planningProviderId || null,
+    model: keyRecord?.planning?.planningModelId || null,
+    extractedUserText: extracted?.text || "",
+    hasUserInput: extracted?.hasUserInput === true,
+    explicitPlanningHeader: request.headers.get("x-9router-planning") || null,
+    decision,
+  }));
+}
+
 // Adaptive Planning is a protocol boundary, not a reason to turn every
 // greeting or factual question into a 202 planning session. Keep the fast
 // decision local and deterministic so simple requests retain the legacy
@@ -150,6 +164,11 @@ export function shouldCreateAutomaticPlan(request, body, keyRecord) {
   const create = planning.planningMode === "ADAPTIVE"
     ? adaptiveDecision?.create === true
     : explicit;
+  debugPlanningDecision(request, keyRecord, extracted, {
+    create,
+    reason: adaptiveDecision?.reason || (extracted.hasUserInput ? "manual-signal-required" : "not-user-input"),
+    decision: adaptiveDecision?.decision || "DIRECT_RESPONSE",
+  });
   if (!create) return { create: false, reason: adaptiveDecision?.reason || (extracted.hasUserInput ? "manual-signal-required" : "not-user-input"), decision: adaptiveDecision?.decision || "DIRECT_RESPONSE" };
   if (!extracted.text) {
     throw planningError("PLANNING_REQUEST_TEXT_REQUIRED", "Planning requires a textual user request", 400);
