@@ -8,9 +8,11 @@ import KeyAccessControls from "../endpoint/components/KeyAccessControls";
 import KeyQuotaControls from "../endpoint/components/KeyQuotaControls";
 import KeyEffortControls from "../endpoint/components/KeyEffortControls";
 import KeyUsageAccessControls from "../endpoint/components/KeyUsageAccessControls";
+import { getProvidersByKind } from "@/shared/constants/providers";
 
 const KEY_SYNC_DEBOUNCE_MS = 300;
 const KEY_SYNC_FALLBACK_MS = 30000;
+const PLANNING_PROVIDER_OPTIONS = getProvidersByKind("llm").filter((provider) => !provider.hidden);
 
 const MANAGE_TABS = [
   { id: "general", label: "General", icon: "tune" },
@@ -406,6 +408,7 @@ export default function ApiKeysPageClient() {
       contextTokenBudget: key.planning?.contextTokenBudget || 1800,
       planExpiration: key.planning?.planExpiration || 10080,
       failurePolicy: key.planning?.failurePolicy || "FAIL_CLOSED",
+      selfServiceEnabled: key.planning?.selfServiceEnabled === true,
     });
     setManageKeyId(key.id);
   };
@@ -856,7 +859,7 @@ export default function ApiKeysPageClient() {
                 <div className="space-y-4">
                   <section className="rounded-xl border border-border bg-surface-2/40 p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div><h3 className="text-sm font-semibold text-text-main">Project-aware Planning</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-text-muted">OFF preserves the existing request pipeline. MANUAL requires the client Planning header. ADAPTIVE automatically turns each new user request into options and returns a 202 planning session before the requested execution model is contacted.</p></div><Badge tone={planningDraft.planningMode === "OFF" ? "muted" : "green"}>{planningDraft.planningMode}</Badge>
+                      <div><h3 className="text-sm font-semibold text-text-main">Project-aware Planning</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-text-muted">OFF preserves the existing request pipeline. MANUAL requires the client Planning header. ADAPTIVE evaluates engineering intent automatically; simple greetings and direct questions keep the normal response path, while complex work returns a 202 planning session before execution.</p></div><Badge tone={planningDraft.planningMode === "OFF" ? "muted" : "green"}>{planningDraft.planningMode}</Badge>
                     </div>
                     <div className="mt-4 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Planning mode">
                       {[
@@ -868,11 +871,12 @@ export default function ApiKeysPageClient() {
                   </section>
 
                   <section className="grid gap-4 rounded-xl border border-border p-4 sm:grid-cols-2">
-                    <label className="text-xs font-semibold text-text-main">Planning provider ID<input value={planningDraft.planningProviderId} onChange={(event) => setPlanningDraft((current) => ({ ...current, planningProviderId: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" placeholder="Configured provider" /></label>
+                    <label className="text-xs font-semibold text-text-main">Planning provider<select value={planningDraft.planningProviderId} onChange={(event) => setPlanningDraft((current) => ({ ...current, planningProviderId: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50"><option value="">Select a provider</option>{planningDraft.planningProviderId && !PLANNING_PROVIDER_OPTIONS.some((provider) => provider.id === planningDraft.planningProviderId) && <option value={planningDraft.planningProviderId}>{planningDraft.planningProviderId} (saved)</option>}{PLANNING_PROVIDER_OPTIONS.map((provider) => <option key={provider.id} value={provider.id}>{provider.name || provider.id}</option>)}</select></label>
                     <label className="text-xs font-semibold text-text-main">Planning model ID<input value={planningDraft.planningModelId} onChange={(event) => setPlanningDraft((current) => ({ ...current, planningModelId: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" placeholder="Configured model" /></label>
                     <label className="text-xs font-semibold text-text-main">Context token budget<input type="number" min="256" max="16000" value={planningDraft.contextTokenBudget} onChange={(event) => setPlanningDraft((current) => ({ ...current, contextTokenBudget: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" /></label>
                     <label className="text-xs font-semibold text-text-main">Plan expiration (minutes)<input type="number" min="5" max="43200" value={planningDraft.planExpiration} onChange={(event) => setPlanningDraft((current) => ({ ...current, planExpiration: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50" /></label>
                     <label className="text-xs font-semibold text-text-main">Failure policy<select value={planningDraft.failurePolicy} onChange={(event) => setPlanningDraft((current) => ({ ...current, failurePolicy: event.target.value }))} disabled={planningDraft.planningMode === "OFF"} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface-2 px-3 font-normal disabled:opacity-50"><option value="FAIL_CLOSED">Fail closed</option><option value="LEGACY_PATH">Continue legacy path</option></select></label>
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3 sm:col-span-2"><div><p className="text-xs font-semibold text-text-main">Allow API Key owner to toggle Planning</p><p className="mt-0.5 text-[10px] text-text-muted">Owner may only turn Planning on/off or switch mode. Provider, model, policy and limits remain Admin-controlled.</p></div><button type="button" role="switch" aria-checked={planningDraft.selfServiceEnabled === true} onClick={() => setPlanningDraft((current) => ({ ...current, selfServiceEnabled: !current.selfServiceEnabled }))} className={`relative h-6 w-11 rounded-full transition ${planningDraft.selfServiceEnabled ? "bg-primary" : "bg-surface-3"}`}><span className={`absolute top-1 size-4 rounded-full bg-white transition ${planningDraft.selfServiceEnabled ? "left-6" : "left-1"}`} /></button></div>
                     <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3"><div><p className="text-xs font-semibold text-text-main">Human approval required</p><p className="mt-0.5 text-[10px] text-text-muted">Always enforced. Chat text can never approve or start execution.</p></div><Badge tone="green">Required</Badge></div>
                   </section>
 

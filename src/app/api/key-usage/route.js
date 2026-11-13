@@ -58,6 +58,7 @@ function planningSummary(keyRecord) {
     mode: enabled ? keyRecord.planning.planningMode : "OFF",
     approvalRequired: true,
     failurePolicy: enabled ? keyRecord.planning.failurePolicy : "FAIL_CLOSED",
+    canToggle: keyRecord?.planning?.selfServiceEnabled === true,
   };
 }
 
@@ -170,13 +171,31 @@ export async function PATCH(request) {
     const visibility = visibilityFromKeyRecord(keyRecord);
     if (!visibility.allowKeyUsage) return usageDisabledResponse();
     const body = await request.json().catch(() => null);
-    if (!body || Array.isArray(body) || !Object.keys(body).length || Object.keys(body).some(k => !["selectedModel", "selectedEffort", "projectId", "createProject"].includes(k))) {
-      return NextResponse.json({ error: "Only selectedModel, selectedEffort, projectId, and createProject may be changed" }, { status: 400, headers: NO_STORE_HEADERS });
+    const allowedFields = ["selectedModel", "selectedEffort", "projectId", "createProject", "planning"];
+    if (!body || Array.isArray(body) || !Object.keys(body).length || Object.keys(body).some(k => !allowedFields.includes(k))) {
+      return NextResponse.json({ error: "Only selectedModel, selectedEffort, projectId, createProject, and planning may be changed" }, { status: 400, headers: NO_STORE_HEADERS });
     }
     if (Object.hasOwn(body, "projectId") && Object.hasOwn(body, "createProject")) {
       return NextResponse.json({ error: "Choose an existing project or create a new one, not both" }, { status: 400, headers: NO_STORE_HEADERS });
     }
     const updates = {};
+    if (body.planning !== undefined) {
+      if (!keyRecord.planning?.selfServiceEnabled) {
+        return NextResponse.json({ error: "Planning toggle is controlled by the administrator", code: "KEY_PLANNING_FORBIDDEN" }, { status: 403, headers: NO_STORE_HEADERS });
+      }
+      if (!body.planning || typeof body.planning !== "object" || Array.isArray(body.planning)) {
+        return NextResponse.json({ error: "planning must be an object" }, { status: 400, headers: NO_STORE_HEADERS });
+      }
+      const forbidden = Object.keys(body.planning).find((field) => !["planningEnabled", "planningMode"].includes(field));
+      if (forbidden) return NextResponse.json({ error: `${forbidden} is controlled by the administrator`, code: "KEY_PLANNING_ADMIN_ONLY" }, { status: 403, headers: NO_STORE_HEADERS });
+      if (body.planning.planningEnabled !== undefined && typeof body.planning.planningEnabled !== "boolean") {
+        return NextResponse.json({ error: "planningEnabled must be a boolean" }, { status: 400, headers: NO_STORE_HEADERS });
+      }
+      if (body.planning.planningMode !== undefined && !["OFF", "MANUAL", "ADAPTIVE"].includes(String(body.planning.planningMode).toUpperCase())) {
+        return NextResponse.json({ error: "planningMode must be OFF, MANUAL, or ADAPTIVE" }, { status: 400, headers: NO_STORE_HEADERS });
+      }
+      updates.planning = body.planning;
+    }
     if (body.selectedModel !== undefined) {
       if (!visibility.canViewModelList) {
         return NextResponse.json(
@@ -229,6 +248,12 @@ export async function PATCH(request) {
     console.error("[API] Failed to update API key model selection:", error);
     if (error?.code === "KEY_EFFORT_FORBIDDEN") return NextResponse.json({ error: "Effort is controlled by the administrator" }, { status: 403, headers: NO_STORE_HEADERS });
     if (error?.code === "KEY_USAGE_FORBIDDEN") return usageDisabledResponse();
+    if (error?.code === "KEY_PLANNING_FORBIDDEN" || error?.code === "KEY_PLANNING_ADMIN_ONLY") {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 403, headers: NO_STORE_HEADERS });
+    }
+    if (error?.code === "INVALID_KEY_PLANNING") {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 400, headers: NO_STORE_HEADERS });
+    }
     if (error?.code === "KEY_USAGE_MODEL_LIST_FORBIDDEN") {
       return NextResponse.json(
         { error: "Model viewing and selection are disabled for this API key." },

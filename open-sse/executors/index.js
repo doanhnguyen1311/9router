@@ -47,6 +47,7 @@ const executors = {
   kiro: new KiroExecutor(),
   kimchi: new KimchiExecutor(),
   codex: new CodexExecutor(),
+  "chatgpt-planning": new CodexExecutor("chatgpt-planning"),
   cursor: new CursorExecutor(),
   cu: new CursorExecutor(), // Alias for cursor
   vertex: new VertexExecutor("vertex"),

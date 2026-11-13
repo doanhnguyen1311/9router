@@ -10,6 +10,7 @@ export const KEY_PLANNING_DEFAULT = Object.freeze({
   contextTokenBudget: 1800,
   planExpiration: 10080,
   failurePolicy: "FAIL_CLOSED",
+  selfServiceEnabled: false,
 });
 
 const cleanOptionalId = (value, field, maxLength) => {
@@ -49,6 +50,7 @@ export function keyPlanningFromColumns(row = {}) {
       ? rawExpiration
       : KEY_PLANNING_DEFAULT.planExpiration,
     failurePolicy: KEY_PLANNING_FAILURE_POLICIES.includes(rawFailure) ? rawFailure : "FAIL_CLOSED",
+    selfServiceEnabled: row.planningSelfServiceEnabled === 1 || row.planningSelfServiceEnabled === true,
   };
 }
 
@@ -58,7 +60,7 @@ export function validateKeyPlanningInput(input) {
   }
   const allowed = new Set([
     "planningEnabled", "planningMode", "planningProviderId", "planningModelId",
-    "approvalRequired", "contextTokenBudget", "planExpiration", "failurePolicy",
+    "approvalRequired", "contextTokenBudget", "planExpiration", "failurePolicy", "selfServiceEnabled",
   ]);
   const unknown = Object.keys(input).find((field) => !allowed.has(field));
   if (unknown) return { ok: false, error: `Unknown planning field: ${unknown}` };
@@ -67,9 +69,11 @@ export function validateKeyPlanningInput(input) {
   const planningMode = String(input.planningMode ?? (planningEnabled ? "MANUAL" : "OFF")).toUpperCase();
   const approvalRequired = input.approvalRequired ?? KEY_PLANNING_DEFAULT.approvalRequired;
   const failurePolicy = String(input.failurePolicy ?? KEY_PLANNING_DEFAULT.failurePolicy).toUpperCase();
+  const selfServiceEnabled = input.selfServiceEnabled ?? KEY_PLANNING_DEFAULT.selfServiceEnabled;
   if (typeof planningEnabled !== "boolean") return { ok: false, error: "planningEnabled must be a boolean" };
   if (!KEY_PLANNING_MODES.includes(planningMode)) return { ok: false, error: "planningMode must be OFF, MANUAL, or ADAPTIVE" };
   if (typeof approvalRequired !== "boolean") return { ok: false, error: "approvalRequired must be a boolean" };
+  if (typeof selfServiceEnabled !== "boolean") return { ok: false, error: "selfServiceEnabled must be a boolean" };
   if (!KEY_PLANNING_FAILURE_POLICIES.includes(failurePolicy)) {
     return { ok: false, error: "failurePolicy must be LEGACY_PATH or FAIL_CLOSED" };
   }
@@ -82,6 +86,9 @@ export function validateKeyPlanningInput(input) {
   if (!model.ok) return model;
   if (planningEnabled && (!provider.value || !model.value)) {
     return { ok: false, error: "Enabled planning requires planningProviderId and planningModelId" };
+  }
+  if (selfServiceEnabled && planningMode !== "OFF" && (!provider.value || !model.value)) {
+    return { ok: false, error: "An administrator must configure planningProviderId and planningModelId before enabling API Key self-service Planning" };
   }
 
   const contextTokenBudget = Number(input.contextTokenBudget ?? KEY_PLANNING_DEFAULT.contextTokenBudget);
@@ -104,6 +111,7 @@ export function validateKeyPlanningInput(input) {
       contextTokenBudget,
       planExpiration,
       failurePolicy,
+      selfServiceEnabled,
     },
   };
 }
@@ -123,6 +131,7 @@ export function keyPlanningToColumns(value) {
       planningContextTokenBudget: planning.contextTokenBudget,
       planningPlanExpirationMinutes: planning.planExpiration,
       planningFailurePolicy: planning.failurePolicy,
+      planningSelfServiceEnabled: planning.selfServiceEnabled ? 1 : 0,
     },
   };
 }

@@ -160,6 +160,49 @@ describe("API key self-service usage summary", () => {
       headers,
       body: JSON.stringify({ planning: { planningMode: "OFF" } }),
     }));
-    expect(escalation.status).toBe(400);
+    expect(escalation.status).toBe(403);
+    expect(await escalation.json()).toMatchObject({ code: "KEY_PLANNING_FORBIDDEN" });
+  });
+
+  it("lets an API key toggle only its Planning mode when the administrator grants permission", async () => {
+    const { database } = await boot();
+    const key = await database.createApiKey("Planning self service", "planning-self-service");
+    await database.updateApiKey(key.id, { planning: {
+      planningEnabled: false,
+      planningMode: "OFF",
+      planningProviderId: "chatgpt-planning",
+      planningModelId: "gpt-6-sol",
+      approvalRequired: true,
+      contextTokenBudget: 1200,
+      planExpiration: 60,
+      failurePolicy: "FAIL_CLOSED",
+      selfServiceEnabled: true,
+    } });
+    const route = await import("@/app/api/key-usage/route.js");
+    const headers = { authorization: `Bearer ${key.key}`, "content-type": "application/json" };
+    const enabled = await route.PATCH(new Request("https://router.example/api/key-usage", {
+      method: "PATCH", headers, body: JSON.stringify({ planning: { planningEnabled: true, planningMode: "ADAPTIVE" } }),
+    }));
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toMatchObject({ planning: { enabled: true, mode: "ADAPTIVE", canToggle: true } });
+
+    const forbidden = await route.PATCH(new Request("https://router.example/api/key-usage", {
+      method: "PATCH", headers, body: JSON.stringify({ planning: { planningProviderId: "openai" } }),
+    }));
+    expect(forbidden.status).toBe(403);
+    expect(await forbidden.json()).toMatchObject({ code: "KEY_PLANNING_ADMIN_ONLY" });
+
+    const stored = await database.getApiKeyByKey(key.key);
+    expect(stored.planning).toMatchObject({
+      planningEnabled: true,
+      planningMode: "ADAPTIVE",
+      planningProviderId: "chatgpt-planning",
+      planningModelId: "gpt-6-sol",
+      failurePolicy: "FAIL_CLOSED",
+      selfServiceEnabled: true,
+    });
+    const exported = await database.exportDb();
+    await database.importDb(exported);
+    expect((await database.getApiKeyByKey(key.key)).planning.selfServiceEnabled).toBe(true);
   });
 });

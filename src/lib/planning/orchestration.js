@@ -112,6 +112,30 @@ function planningIdentity(keyRecord) {
   };
 }
 
+// Adaptive Planning is a protocol boundary, not a reason to turn every
+// greeting or factual question into a 202 planning session. Keep the fast
+// decision local and deterministic so simple requests retain the legacy
+// latency/response contract. Requests with explicit engineering intent (or
+// code/file signals) continue to the configured Planning Provider. A client
+// can always force Planning in MANUAL mode with X-9Router-Planning: plan.
+const DIRECT_REQUEST_PATTERNS = [
+  /^(?:hi|hello|hey|yo|thanks|thank you|good morning|good afternoon|good evening)[!.?\s]*$/i,
+  /^(?:how are you|what(?:'|’)s up|who are you|help)$/i,
+];
+const ENGINEERING_INTENT_PATTERN = /\b(?:plan|planning|implement|add|change|modify|update|fix|debug|refactor|rewrite|remove|delete|create|build|migrate|integrat(?:e|ion)|configure|set up|setup|test|deploy|index|import|export|replace|improve|review|inspect|analy[sz]e|request|continue|safely|policy|sửa|thêm|đổi|sửa lỗi|tạo|xây dựng|di chuyển|tích hợp|cấu hình|kiểm tra)\b/i;
+const CODE_OR_FILE_SIGNAL_PATTERN = /(?:```|\b(?:src|app|lib|open-sse|tests?)\/|\.(?:js|jsx|ts|tsx|py|sql|json|md)\b|\b(?:api|endpoint|database|schema|migration|repository|provider|workspace|project)\b)/i;
+
+export function decideAdaptivePlanning(text) {
+  const value = String(text || "").trim();
+  if (!value || DIRECT_REQUEST_PATTERNS.some((pattern) => pattern.test(value))) {
+    return { create: false, reason: "direct-response", decision: "DIRECT_RESPONSE" };
+  }
+  if (ENGINEERING_INTENT_PATTERN.test(value) || CODE_OR_FILE_SIGNAL_PATTERN.test(value) || value.length > 280) {
+    return { create: true, reason: "engineering-intent", decision: "REQUIRE_PLAN" };
+  }
+  return { create: false, reason: "direct-response", decision: "DIRECT_RESPONSE" };
+}
+
 export function shouldCreateAutomaticPlan(request, body, keyRecord) {
   const planning = keyRecord?.planning;
   if (!keyRecord?.isActive || keyRecord?.isExpired || !planning?.planningEnabled) {
@@ -120,8 +144,13 @@ export function shouldCreateAutomaticPlan(request, body, keyRecord) {
   if (planning.planningMode === "OFF") return { create: false, reason: "disabled" };
   const extracted = extractPlanningRequest(body);
   const explicit = String(request.headers.get("x-9router-planning") || "").trim().toLowerCase() === "plan";
-  const create = planning.planningMode === "ADAPTIVE" ? extracted.hasUserInput : explicit;
-  if (!create) return { create: false, reason: extracted.hasUserInput ? "manual-signal-required" : "not-user-input" };
+  const adaptiveDecision = planning.planningMode === "ADAPTIVE" && extracted.hasUserInput
+    ? decideAdaptivePlanning(extracted.text)
+    : null;
+  const create = planning.planningMode === "ADAPTIVE"
+    ? adaptiveDecision?.create === true
+    : explicit;
+  if (!create) return { create: false, reason: adaptiveDecision?.reason || (extracted.hasUserInput ? "manual-signal-required" : "not-user-input"), decision: adaptiveDecision?.decision || "DIRECT_RESPONSE" };
   if (!extracted.text) {
     throw planningError("PLANNING_REQUEST_TEXT_REQUIRED", "Planning requires a textual user request", 400);
   }
@@ -329,4 +358,4 @@ export async function getPlanningSessionForApiKey(request, planId) {
   return { plan, keyRecord, identity: planningIdentity(keyRecord) };
 }
 
-export const __test__ = { actionNames, contentText, executionSummary, hashBoundValue, idempotencyValue, latestRoleText };
+export const __test__ = { actionNames, contentText, executionSummary, hashBoundValue, idempotencyValue, latestRoleText, decideAdaptivePlanning };

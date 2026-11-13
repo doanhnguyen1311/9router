@@ -387,8 +387,8 @@ export async function importDb(payload) {
           quotaUsedCost, quotaUsedInputTokens, quotaUsedRequests, quotaUsageResetAt
           , ownerId, projectAccess, maxProjects,
           planningEnabled, planningMode, planningProviderId, planningModelId,
-          planningApprovalRequired, planningContextTokenBudget, planningPlanExpirationMinutes, planningFailurePolicy
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          planningApprovalRequired, planningContextTokenBudget, planningPlanExpirationMinutes, planningFailurePolicy, planningSelfServiceEnabled
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           k.id, protectedKey.storageKey, protectedKey.keyHash, protectedKey.keyEncrypted,
           k.name || null, k.machineId || null, k.isActive === false ? 0 : 1,
@@ -407,6 +407,7 @@ export async function importDb(payload) {
           planningCols.planningProviderId, planningCols.planningModelId,
           planningCols.planningApprovalRequired, planningCols.planningContextTokenBudget,
           planningCols.planningPlanExpirationMinutes, planningCols.planningFailurePolicy,
+          planningCols.planningSelfServiceEnabled,
         ]
       );
     }

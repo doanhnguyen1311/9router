@@ -175,6 +175,21 @@ describe("Automatic planning request orchestration", () => {
     expect(adapter.all("PRAGMA foreign_key_check")).toEqual([]);
   });
 
+  it("keeps simple greetings and conversational requests on the normal response path", async () => {
+    const { orchestration, key, keyRecord } = await boot();
+    const selectedProvider = provider();
+    const result = await orchestration.orchestratePlanningRequest({
+      request: request(key, { idempotency: null, body: { model: "codex/gpt-5", messages: [{ role: "user", content: "hello" }] } }),
+      body: { model: "codex/gpt-5", messages: [{ role: "user", content: "hello" }] },
+      keyRecord,
+      provider: selectedProvider,
+    });
+    expect(result).toMatchObject({ handled: false, reason: "direct-response" });
+    expect(selectedProvider.generatePlan).not.toHaveBeenCalled();
+    expect(orchestration.__test__.decideAdaptivePlanning("hello")).toMatchObject({ create: false, decision: "DIRECT_RESPONSE" });
+    expect(orchestration.__test__.decideAdaptivePlanning("Implement a retry policy in src/lib/retry.js")).toMatchObject({ create: true, decision: "REQUIRE_PLAN" });
+  });
+
   it("keeps MANUAL requests on the legacy path unless explicitly requested", async () => {
     const { orchestration, key, keyRecord } = await boot({ mode: "MANUAL" });
     const selectedProvider = provider();

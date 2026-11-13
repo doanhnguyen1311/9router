@@ -109,6 +109,8 @@ export default function KeyUsageClient() {
   const [projectSaving, setProjectSaving] = useState(false);
   const [projectMessage, setProjectMessage] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
+  const [planningSaving, setPlanningSaving] = useState(false);
+  const [planningMessage, setPlanningMessage] = useState("");
   const requestControllerRef = useRef(null);
   const canViewModelList = summary?.permissions?.canViewModelList !== false;
 
@@ -192,6 +194,7 @@ export default function KeyUsageClient() {
       setModelMessage("");
       setProjectMessage("");
       setNewProjectName("");
+      setPlanningMessage("");
     }
   };
 
@@ -210,6 +213,7 @@ export default function KeyUsageClient() {
     setModelMessage("");
     setProjectMessage("");
     setNewProjectName("");
+    setPlanningMessage("");
   };
 
   const selectModel = async (selectedModel) => {
@@ -245,6 +249,25 @@ export default function KeyUsageClient() {
       setSummary(current => current ? { ...current, effortPolicy: data.effortPolicy } : current);
     } catch (error) { setEffortError(error.message || "Could not select effort"); }
     finally { setEffortBusy(false); }
+  }
+
+  async function togglePlanning(enabled) {
+    if (!activeKey || !summary?.planning?.canToggle || planningSaving) return;
+    setPlanningSaving(true); setPlanningMessage("");
+    const mode = enabled ? (summary.planning.mode === "OFF" ? "ADAPTIVE" : summary.planning.mode) : "OFF";
+    try {
+      const response = await fetch("/api/key-usage", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeKey}` },
+        body: JSON.stringify({ planning: { planningEnabled: enabled, planningMode: mode } }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Unable to change Planning.");
+      setSummary((current) => current ? { ...current, planning: body.planning || { ...current.planning, enabled, mode } } : current);
+      setPlanningMessage(enabled ? "Planning enabled for this key." : "Planning disabled for this key.");
+    } catch (planningError) {
+      setPlanningMessage(planningError.message || "Unable to change Planning.");
+    } finally { setPlanningSaving(false); }
   }
 
   async function selectProject(projectId) {
@@ -432,11 +455,16 @@ export default function KeyUsageClient() {
                 <span className="material-symbols-outlined rounded-lg bg-brand-500/10 p-2 text-[19px] text-brand-500" aria-hidden="true">edit_note</span>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-text-main">Planning workflow</h2><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${summary.planning.enabled ? "bg-green-500/10 text-green-500" : "bg-surface-2 text-text-muted"}`}>{summary.planning.mode}</span></div>
-                  {!summary.planning.enabled ? <p className="mt-1 text-xs leading-5 text-text-muted">Planning is disabled by the administrator. Requests use the normal model response path.</p> : <>
-                    <p className="mt-1 text-xs leading-5 text-text-muted">{summary.planning.mode === "ADAPTIVE" ? "New text requests automatically return a 202 planning session with options before execution." : "Send X-9Router-Planning: plan to request options; requests without it use the normal response path."}</p>
+                  {!summary.planning.enabled ? <p className="mt-1 text-xs leading-5 text-text-muted">Planning is disabled. Requests use the normal model response path.</p> : <>
+                    <p className="mt-1 text-xs leading-5 text-text-muted">{summary.planning.mode === "ADAPTIVE" ? "Engineering requests are automatically evaluated for Planning; simple greetings and direct questions keep the normal response path." : "Send X-9Router-Planning: plan to request options; requests without it use the normal response path."}</p>
                     <p className="mt-2 text-xs leading-5 text-text-muted">Use the response&apos;s <code className="rounded bg-surface-2 px-1 text-text-main">links.actions</code> endpoint to select, revise and explicitly approve. Approval is always required.</p>
                     {summary.planning.failurePolicy === "LEGACY_PATH" && <p role="alert" className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-2 text-xs text-amber-600">A transient planner failure may continue through the normal model path because the administrator selected Continue legacy path.</p>}
                   </>}
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface-2/40 p-3">
+                    <div><p className="text-xs font-semibold text-text-main">Planning for this API key</p><p className="mt-0.5 text-[11px] text-text-muted">Only the administrator can choose the Provider, Model, limits and failure policy.</p></div>
+                    {summary.planning.canToggle ? <button type="button" role="switch" aria-checked={summary.planning.enabled === true} aria-label="Toggle Planning for this API key" onClick={() => void togglePlanning(!summary.planning.enabled)} disabled={planningSaving} className={`relative h-6 w-11 rounded-full transition disabled:opacity-60 ${summary.planning.enabled ? "bg-brand-500" : "bg-surface-3"}`}><span className={`absolute top-1 size-4 rounded-full bg-white transition ${summary.planning.enabled ? "left-6" : "left-1"}`} /></button> : <span className="rounded-full bg-surface-2 px-2.5 py-1 text-[10px] font-semibold text-text-muted">Admin controlled</span>}
+                  </div>
+                  {planningMessage && <p className="mt-2 text-[11px] text-text-muted" aria-live="polite">{planningMessage}</p>}
                 </div>
               </div>
             </Card>}

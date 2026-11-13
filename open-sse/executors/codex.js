@@ -208,8 +208,8 @@ function codexSseErrorResponse(status, message) {
  * Automatically injects default instructions if missing
  */
 export class CodexExecutor extends BaseExecutor {
-  constructor() {
-    super("codex", PROVIDERS.codex);
+  constructor(providerId = "codex") {
+    super(providerId, PROVIDERS[providerId] || PROVIDERS.codex);
     this._currentSessionId = null;
   }
 
@@ -247,11 +247,11 @@ export class CodexExecutor extends BaseExecutor {
 
   async refreshCredentials(credentials, log) {
     if (!credentials?.refreshToken) return null;
-    return refreshProviderCredentials("codex", credentials, log);
+    return refreshProviderCredentials(this.provider, credentials, log);
   }
 
   needsRefresh(credentials) {
-    return shouldRefreshCredentials("codex", credentials);
+    return shouldRefreshCredentials(this.provider, credentials);
   }
 
   /**

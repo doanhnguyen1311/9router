@@ -496,17 +496,50 @@ export async function updateApiKey(id, data, options = {}) {
     }
     if (data.planning !== undefined) {
       if (options.keyUsageSelfService === true) {
-        const error = new Error("Planning configuration is controlled by the administrator");
-        error.code = "KEY_USAGE_FORBIDDEN";
-        throw error;
+        if (!current.planning.selfServiceEnabled) {
+          const error = new Error("Planning toggle is controlled by the administrator");
+          error.code = "KEY_PLANNING_FORBIDDEN";
+          throw error;
+        }
+        const requested = data.planning;
+        if (!requested || typeof requested !== "object" || Array.isArray(requested)) {
+          const error = new Error("planning must be an object");
+          error.code = "INVALID_KEY_PLANNING";
+          throw error;
+        }
+        const forbidden = ["planningProviderId", "planningModelId", "failurePolicy", "contextTokenBudget", "planExpiration", "approvalRequired", "selfServiceEnabled"]
+          .find((field) => Object.hasOwn(requested, field));
+        if (forbidden) {
+          const error = new Error(`${forbidden} is controlled by the administrator`);
+          error.code = "KEY_PLANNING_ADMIN_ONLY";
+          throw error;
+        }
+        if (Object.keys(requested).some((field) => !["planningEnabled", "planningMode"].includes(field))) {
+          const error = new Error("Only planningEnabled or planningMode may be changed by this API key");
+          error.code = "KEY_PLANNING_ADMIN_ONLY";
+          throw error;
+        }
+        const nextMode = String(requested.planningMode ?? (requested.planningEnabled ? current.planning.planningMode : "OFF")).toUpperCase();
+        const nextEnabled = requested.planningEnabled ?? (nextMode !== "OFF");
+        if (nextEnabled && (!current.planning.planningProviderId || !current.planning.planningModelId)) {
+          const error = new Error("An administrator must configure the Planning Provider and Model before this API key can enable Planning");
+          error.code = "KEY_PLANNING_ADMIN_ONLY";
+          throw error;
+        }
+        data = { ...data, planning: {
+          ...current.planning,
+          planningEnabled: nextEnabled,
+          planningMode: nextEnabled ? nextMode : "OFF",
+        } };
+      } else {
+        const checked = validateKeyPlanningInput(data.planning);
+        if (!checked.ok) {
+          const error = new Error(checked.error);
+          error.code = "INVALID_KEY_PLANNING";
+          throw error;
+        }
+        data = { ...data, planning: checked.value };
       }
-      const checked = validateKeyPlanningInput(data.planning);
-      if (!checked.ok) {
-        const error = new Error(checked.error);
-        error.code = "INVALID_KEY_PLANNING";
-        throw error;
-      }
-      data = { ...data, planning: checked.value };
     }
     const nextQuota = data.quota ? { ...current.quota, ...data.quota } : current.quota;
     const merged = { ...current, ...data, quota: nextQuota };
@@ -585,7 +618,7 @@ export async function updateApiKey(id, data, options = {}) {
         projectAccess = ?, maxProjects = ?,
         planningEnabled = ?, planningMode = ?, planningProviderId = ?, planningModelId = ?,
         planningApprovalRequired = ?, planningContextTokenBudget = ?,
-        planningPlanExpirationMinutes = ?, planningFailurePolicy = ?,
+        planningPlanExpirationMinutes = ?, planningFailurePolicy = ?, planningSelfServiceEnabled = ?,
         quotaMaxCost = ?, quotaMaxInputTokens = ?, quotaMaxRequests = ?,
         quotaResetMode = ?, quotaResetInterval = ?,
         quotaResetIntervalValue = ?, quotaResetIntervalUnit = ?, quotaExpiresAt = ?, quotaNextResetAt = ?
@@ -602,6 +635,7 @@ export async function updateApiKey(id, data, options = {}) {
         planningCols.planningProviderId, planningCols.planningModelId,
         planningCols.planningApprovalRequired, planningCols.planningContextTokenBudget,
         planningCols.planningPlanExpirationMinutes, planningCols.planningFailurePolicy,
+        planningCols.planningSelfServiceEnabled,
         quotaCols.quotaMaxCost, quotaCols.quotaMaxInputTokens, quotaCols.quotaMaxRequests,
         quotaCols.quotaResetMode, quotaCols.quotaResetInterval,
         quotaCols.quotaResetIntervalValue, quotaCols.quotaResetIntervalUnit,
