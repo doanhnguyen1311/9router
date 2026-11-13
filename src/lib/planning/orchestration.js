@@ -184,6 +184,56 @@ export function shouldCreateAutomaticPlan(request, body, keyRecord) {
   return { create: true, originalRequest: extracted.text };
 }
 
+function parseDecisionText(payload) {
+  const content = payload?.choices?.[0]?.message?.content
+    || payload?.output_text
+    || payload?.content
+    || "";
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content) ? content.map((item) => item?.text || "").join("") : "";
+  const normalized = text.toUpperCase();
+  if (/REQUIRE_PLAN/.test(normalized)) return "REQUIRE_PLAN";
+  if (/DIRECT_RESPONSE/.test(normalized)) return "DIRECT_RESPONSE";
+  return null;
+}
+
+async function askExecutionModelForPlanningDecision({ body, request, userText }) {
+  const model = typeof body?.model === "string" ? body.model.trim() : "";
+  if (!model.includes("/")) return null;
+  const { handleSingleModelChat } = await import("@/sse/handlers/chat.js");
+  const decisionBody = {
+    model,
+    stream: false,
+    temperature: 0,
+    max_tokens: 80,
+    messages: [
+      {
+        role: "system",
+        content: "Classify whether the user's request needs a project implementation plan before execution. Return exactly one token: DIRECT_RESPONSE or REQUIRE_PLAN. Greetings, questions, explanations, and simple conversational requests are DIRECT_RESPONSE. Code, file, repository, configuration, debugging, migration, or multi-step implementation work is REQUIRE_PLAN.",
+      },
+      { role: "user", content: userText },
+    ],
+  };
+  const internalRequest = new Request("http://9router.internal/v1/chat/completions", {
+    method: "POST",
+    headers: { "user-agent": "9router-planning-decision/1", "content-type": "application/json" },
+    signal: request.signal,
+  });
+  const response = await handleSingleModelChat(
+    decisionBody,
+    model,
+    { endpoint: "/v1/chat/completions", body: decisionBody, headers: { "user-agent": "9router-planning-decision/1" } },
+    internalRequest,
+    null,
+    null,
+    undefined,
+    { signal: request.signal, disableRequestTransforms: true },
+  );
+  if (!response || response.status < 200 || response.status >= 300) return null;
+  return parseDecisionText(await response.json());
+}
+
 function parseExecutionJson(value, fallback) {
   try { return value ? JSON.parse(value) : fallback; }
   catch { return fallback; }
@@ -317,6 +367,25 @@ export async function orchestratePlanningRequest({ request, body, keyRecord, ses
   let decision;
   try {
     decision = shouldCreateAutomaticPlan(request, body, keyRecord);
+    const adaptiveInput = keyRecord?.planning?.planningMode === "ADAPTIVE"
+      ? extractPlanningRequest(body)
+      : null;
+    if (adaptiveInput?.hasUserInput && adaptiveInput.text) {
+      const modelDecision = await askExecutionModelForPlanningDecision({
+        body,
+        request,
+        userText: adaptiveInput.text,
+      });
+      if (modelDecision === "DIRECT_RESPONSE") {
+        decision = { create: false, reason: "model-direct-response", decision: modelDecision };
+      } else if (modelDecision === "REQUIRE_PLAN") {
+        decision = { create: true, originalRequest: adaptiveInput.text, reason: "model-requires-plan", decision: modelDecision };
+      }
+      debugPlanningDecision(request, keyRecord, adaptiveInput, {
+        ...decision,
+        modelDecision,
+      });
+    }
   } catch (error) {
     return { handled: true, response: planningOperationErrorResponse(error), error };
   }
