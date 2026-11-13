@@ -24,7 +24,8 @@ function cleanText(value) {
   // Trae wraps the visible request in a user message together with IDE
   // instructions and <system-reminder> blocks. Those instructions are not
   // user intent and must never drive Adaptive Planning decisions.
-  const userInput = text.match(/<user_input>\s*([\s\S]*?)\s*<\/user_input>/i);
+  const userInputs = [...text.matchAll(/<user_input>\s*([\s\S]*?)\s*<\/user_input>/gi)];
+  const userInput = userInputs.at(-1);
   if (userInput) text = userInput[1];
   else text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "");
   return text.slice(0, PLAN_LIMITS.originalRequestChars + 1).trim();
