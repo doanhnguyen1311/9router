@@ -9,6 +9,16 @@ function statusTone(status) {
   return "text-amber-500";
 }
 
+async function readJsonResponse(response, action) {
+  const raw = await response.text();
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    const contentType = response.headers.get("content-type") || "unknown";
+    throw new Error(`${action} returned a non-JSON response (${response.status}, ${contentType}). Check the server route or deployment.`);
+  }
+}
+
 export default function ProjectChatGPTConnectorPanel({ projectId, canEdit }) {
   const [connectors, setConnectors] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -21,7 +31,7 @@ export default function ProjectChatGPTConnectorPanel({ projectId, canEdit }) {
     setError("");
     try {
       const response = await fetch(`/api/v1/projects/${projectId}/chatgpt-connectors`, { cache: "no-store" });
-      const body = await response.json();
+      const body = await readJsonResponse(response, "Loading ChatGPT connectors");
       if (!response.ok) throw new Error(body.error || "Could not load ChatGPT connectors.");
       setConnectors(body.connectors || []);
     } catch (loadError) {
@@ -42,7 +52,7 @@ export default function ProjectChatGPTConnectorPanel({ projectId, canEdit }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ displayName: "ChatGPT Workspace Planning", allowPlanSubmit: true }),
       });
-      const body = await response.json();
+      const body = await readJsonResponse(response, "Creating ChatGPT connector");
       if (!response.ok) throw new Error(body.error || "Could not create ChatGPT connector.");
       setPairing({ ...body, connector: body.connector, mcpUrl: body.mcpUrl });
       await load();
@@ -58,7 +68,7 @@ export default function ProjectChatGPTConnectorPanel({ projectId, canEdit }) {
     setError("");
     try {
       const response = await fetch(`/api/v1/projects/${projectId}/chatgpt-connectors/${connectorId}/pair`, { method: "POST" });
-      const body = await response.json();
+      const body = await readJsonResponse(response, "Rotating pairing code");
       if (!response.ok) throw new Error(body.error || "Could not rotate pairing code.");
       setPairing({ ...body, mcpUrl: `${window.location.origin}/api/v1/connectors/chatgpt/mcp` });
       await load();
@@ -75,7 +85,7 @@ export default function ProjectChatGPTConnectorPanel({ projectId, canEdit }) {
     setError("");
     try {
       const response = await fetch(`/api/v1/projects/${projectId}/chatgpt-connectors/${connectorId}`, { method: "DELETE" });
-      const body = await response.json();
+      const body = await readJsonResponse(response, "Revoking ChatGPT connector");
       if (!response.ok) throw new Error(body.error || "Could not revoke connector.");
       setPairing(null);
       await load();
