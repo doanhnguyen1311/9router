@@ -20,7 +20,14 @@ const FALLBACK_CODES = new Set([
 
 function cleanText(value) {
   if (typeof value !== "string") return "";
-  return value.slice(0, PLAN_LIMITS.originalRequestChars + 1).replace(/\u0000/g, "").trim();
+  let text = value.replace(/\u0000/g, "");
+  // Trae wraps the visible request in a user message together with IDE
+  // instructions and <system-reminder> blocks. Those instructions are not
+  // user intent and must never drive Adaptive Planning decisions.
+  const userInput = text.match(/<user_input>\s*([\s\S]*?)\s*<\/user_input>/i);
+  if (userInput) text = userInput[1];
+  else text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "");
+  return text.slice(0, PLAN_LIMITS.originalRequestChars + 1).trim();
 }
 
 function contentText(content) {
