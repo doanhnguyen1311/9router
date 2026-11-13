@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { appendFile } from "node:fs/promises";
+import path from "node:path";
 import { getAdapter } from "@/lib/db/driver.js";
 import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
 import { getPlan, createPlan } from "./service.js";
@@ -10,6 +12,7 @@ const NO_STORE_HEADERS = Object.freeze({
   "Cache-Control": "private, no-store, max-age=0",
   "Content-Type": "application/json; charset=utf-8",
 });
+const DEBUG_RUNTIME_FILE = process.env.DEBUG_TRAE_FILE || path.join(process.cwd(), "agents", "trae-runtime-debug.jsonl");
 
 const FALLBACK_CODES = new Set([
   "PLANNING_OUTPUT_INVALID",
@@ -122,7 +125,9 @@ function planningIdentity(keyRecord) {
 
 function debugPlanningDecision(request, keyRecord, extracted, decision) {
   if (process.env.DEBUG_TRAE_REQUESTS !== "1") return;
-  console.info("[PLANNING_DEBUG]", JSON.stringify({
+  const record = {
+    kind: "planning-decision",
+    requestId: request.headers.get("x-request-id") || null,
     mode: keyRecord?.planning?.planningMode || "OFF",
     enabled: keyRecord?.planning?.planningEnabled === true,
     provider: keyRecord?.planning?.planningProviderId || null,
@@ -131,7 +136,10 @@ function debugPlanningDecision(request, keyRecord, extracted, decision) {
     hasUserInput: extracted?.hasUserInput === true,
     explicitPlanningHeader: request.headers.get("x-9router-planning") || null,
     decision,
-  }));
+  };
+  console.info("[PLANNING_DEBUG]", JSON.stringify(record));
+  void appendFile(DEBUG_RUNTIME_FILE, `${JSON.stringify({ timestamp: new Date().toISOString(), ...record })}\n`, "utf8")
+    .catch(() => {});
 }
 
 // Adaptive Planning is a protocol boundary, not a reason to turn every

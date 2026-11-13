@@ -1,20 +1,74 @@
 import { setKeyEffortPolicy, getKeyEffortPolicy, effortRoutingModel, resolveKeyEffort } from "../services/keyEffort.js";
 import "open-sse/index.js";
+import { appendFile } from "node:fs/promises";
+import path from "node:path";
 import { chatHistory, setHistoryObserver, getHistoryObserver } from "@/lib/chatHistory/service.js";
+
+const DEBUG_TRAE_REQUESTS = process.env.DEBUG_TRAE_REQUESTS === "1";
+const DEBUG_TRAE_FILE = process.env.DEBUG_TRAE_FILE || path.join(process.cwd(), "agents", "trae-runtime-debug.jsonl");
+const DEBUG_SENSITIVE_HEADERS = new Set([
+  "authorization", "cookie", "set-cookie", "x-api-key", "proxy-authorization",
+  "acl-token", "x-9r-peer-token", "x-forwarded-for", "cf-connecting-ip",
+]);
+
+function debugHeaders(request) {
+  return Object.fromEntries([...request.headers.entries()].map(([name, value]) => [
+    name,
+    DEBUG_SENSITIVE_HEADERS.has(name.toLowerCase()) ? "[REDACTED]" : value,
+  ]));
+}
+
+function appendRuntimeDebug(record) {
+  if (!DEBUG_TRAE_REQUESTS) return;
+  void appendFile(
+    DEBUG_TRAE_FILE,
+    `${JSON.stringify({ timestamp: new Date().toISOString(), ...record })}\n`,
+    "utf8",
+  ).catch((error) => log.warn("TRAE_DEBUG", `Could not write ${DEBUG_TRAE_FILE}: ${error.message}`));
+}
+
+async function debugOutgoingResponse(request, response) {
+  if (!DEBUG_TRAE_REQUESTS || !response) return;
+  let body = "";
+  try { body = await response.clone().text(); }
+  catch (error) { body = `[response capture failed: ${error.message}]`; }
+  appendRuntimeDebug({
+    kind: "response",
+    requestId: request.headers.get("x-request-id") || null,
+    status: response.status,
+    headers: Object.fromEntries(response.headers.entries()),
+    body,
+  });
+}
 
 export async function handleChat(request, clientRawRequest = null, historyBody = null) {
   let response;
   try {
     response = await handleChatRequest(request, clientRawRequest, historyBody);
   } catch (error) {
+    appendRuntimeDebug({
+      kind: "error",
+      requestId: request.headers.get("x-request-id") || null,
+      error: { name: error.name, message: error.message, stack: error.stack },
+    });
     getHistoryObserver(request)?.finish(request.signal?.aborted ? "aborted" : "failed", error);
     throw error;
   }
   observeProjectResponse(request, response);
   const observer = getHistoryObserver(request);
-  if (!observer) return response;
-  try { return observer.wrap(response, request.signal); }
-  catch { observer.finish("failed"); return response; }
+  if (!observer) {
+    void debugOutgoingResponse(request, response);
+    return response;
+  }
+  try {
+    const wrapped = observer.wrap(response, request.signal);
+    void debugOutgoingResponse(request, wrapped);
+    return wrapped;
+  } catch {
+    observer.finish("failed");
+    void debugOutgoingResponse(request, response);
+    return response;
+  }
 }
 
 import {
@@ -53,15 +107,17 @@ import {
 } from "@/lib/projectMemory/runtime.js";
 import { orchestratePlanningRequest } from "@/lib/planning/orchestration.js";
 
-const DEBUG_TRAE_REQUESTS = process.env.DEBUG_TRAE_REQUESTS === "1";
-const DEBUG_SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-api-key", "proxy-authorization"]);
-
 function debugIncomingRequest(request, body) {
   if (!DEBUG_TRAE_REQUESTS) return;
-  const headers = Object.fromEntries([...request.headers.entries()].map(([name, value]) => [
-    name,
-    DEBUG_SENSITIVE_HEADERS.has(name.toLowerCase()) ? "[REDACTED]" : value,
-  ]));
+  const headers = debugHeaders(request);
+  appendRuntimeDebug({
+    kind: "request",
+    requestId: request.headers.get("x-request-id") || null,
+    method: request.method,
+    url: request.url,
+    headers,
+    body,
+  });
   log.info("TRAE_DEBUG", JSON.stringify({
     method: request.method,
     url: request.url,
