@@ -53,6 +53,23 @@ import {
 } from "@/lib/projectMemory/runtime.js";
 import { orchestratePlanningRequest } from "@/lib/planning/orchestration.js";
 
+const DEBUG_TRAE_REQUESTS = process.env.DEBUG_TRAE_REQUESTS === "1";
+const DEBUG_SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-api-key", "proxy-authorization"]);
+
+function debugIncomingRequest(request, body) {
+  if (!DEBUG_TRAE_REQUESTS) return;
+  const headers = Object.fromEntries([...request.headers.entries()].map(([name, value]) => [
+    name,
+    DEBUG_SENSITIVE_HEADERS.has(name.toLowerCase()) ? "[REDACTED]" : value,
+  ]));
+  log.info("TRAE_DEBUG", JSON.stringify({
+    method: request.method,
+    url: request.url,
+    headers,
+    body,
+  }));
+}
+
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
@@ -66,6 +83,7 @@ async function handleChatRequest(request, clientRawRequest = null, historyBody =
     log.warn("CHAT", "Invalid JSON body");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
   }
+  debugIncomingRequest(request, body);
 
   // Build clientRawRequest for logging (if not provided)
   if (!clientRawRequest) {
